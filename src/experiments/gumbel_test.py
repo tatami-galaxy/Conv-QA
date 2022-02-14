@@ -98,10 +98,12 @@ def forward(batch):
     norm_xcord = torch.linspace(-1, 1, embed_dim).to(device)	# normalized x coordinates. we need the entire vector so we will use all the coordinates
 
     embeddings = rc_model.get_input_embeddings().weight[:act_vocab_size, :]  # 32100, 768
+    #print(embeddings[410])
     embeddings = embeddings.view(1, 1, act_vocab_size, -1)  # 1, 1, 32100, 768
 
     embeddings = embeddings.repeat(gumbel_output.shape[0], 1, 1, 1)  # b, 1, 32100, 768  repeating embeddigs batch number of times
 
+    
     for i in range(max_length):  # maybe mask before this?
         gumbeli = gumbel_output[:, i, :]  # ith token in the sequence
         gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # grid
@@ -109,14 +111,18 @@ def forward(batch):
         # getting normalized y coord  # 2, 1, 32100
         gumbeli = torch.mul(gumbeli, norm_ycord)
         nonz_ids = torch.nonzero(gumbeli)[:, -1] # non zero elements in each example of the batch. corresponds to the normalized id chosen by gumbel softmax
+        #print(nonz_ids)
 
+        tensor_list = []
         for j in range(len(nonz_ids)):
             gumbeli[j, :, :] = gumbeli[j, :, nonz_ids[j]] # set all elements to the non zero elements
             gumbeli = gumbeli[:, :, :embed_dim] # truncate to embed_dim
-            a = torch.cat((norm_xcord.view(1, embed_dim).T, gumbeli[j].T), dim = 1).view(1, embed_dim, 2)
-            print(a)
-            print(a.shape)
-            break
+            tensorj = torch.cat((norm_xcord.view(1, embed_dim).T, gumbeli[j].T), dim = 1).view(1, embed_dim, 2)  # cat the normalized x coords
+            tensor_list.append(tensorj)
+            
+        gumbeli = torch.cat(tensor_list, dim=0)
+        gumbeli = gumbeli.view(gumbeli.shape[0], 1, embed_dim, 2) # b, 1, 768, 2
+        output = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border') # b, 1, 1, 768
 
         break
 
