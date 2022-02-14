@@ -63,7 +63,7 @@ def forward(batch):
     # # tokens with indices set to -100 are ignored (masked)
     rwrt_input[rwrt_input == tokenizer.pad_token_id] = -100
     rwrt_input = rwrt_input.to(device)
-    rwrt_attention = batch['rwrt_attention_mask'].to(device)
+    rwrt_attention = batch['rwrt_attention_mask'].to(device) # b, 384
 
     # passage input
     psg_input = batch['psg_input_ids'].to(device)
@@ -90,8 +90,7 @@ def forward(batch):
 
     # gumbel softmax on the logits
     # slice upto actual vocabulary sizegumbel_softmax
-    gumbel_output = F.gumbel_softmax(
-        logits, tau=1, hard=True)[..., :act_vocab_size]
+    gumbel_output = F.gumbel_softmax(logits, tau=1, hard=True)[..., :act_vocab_size]
     # print(gumbel_output.shape) # b, 384, 32100
 
     norm_ycord = torch.linspace(-1, 1, act_vocab_size).to(device) # normalized y cordinates for the grid. we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
@@ -103,8 +102,9 @@ def forward(batch):
 
     embeddings = embeddings.repeat(gumbel_output.shape[0], 1, 1, 1)  # b, 1, 32100, 768  repeating embeddigs batch number of times
 
+    embedding_list = []
     
-    for i in range(max_length):  # maybe mask before this?
+    for i in range(max_length):
         gumbeli = gumbel_output[:, i, :]  # ith token in the sequence
         gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # grid
 
@@ -116,15 +116,21 @@ def forward(batch):
         tensor_list = []
         for j in range(len(nonz_ids)):
             gumbeli[j, :, :] = gumbeli[j, :, nonz_ids[j]] # set all elements to the non zero elements
-            gumbeli = gumbeli[:, :, :embed_dim] # truncate to embed_dim
-            tensorj = torch.cat((norm_xcord.view(1, embed_dim).T, gumbeli[j].T), dim = 1).view(1, embed_dim, 2)  # cat the normalized x coords
+            gumbeli_trunc = gumbeli[:, :, :embed_dim] # truncate to embed_dim
+            tensorj = torch.cat((norm_xcord.view(1, embed_dim).T, gumbeli_trunc[j].T), dim = 1).view(1, embed_dim, 2)  # cat the normalized x coords
             tensor_list.append(tensorj)
             
         gumbeli = torch.cat(tensor_list, dim=0)
         gumbeli = gumbeli.view(gumbeli.shape[0], 1, embed_dim, 2) # b, 1, 768, 2
-        output = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border') # b, 1, 1, 768
+        token_embedding = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border') # b, 1, 1, 768
+        token_embedding = token_embedding.view(token_embedding.shape[0], -1)
+        
+        embedding_list.append(token_embedding)
+        
+    print(len(embedding_list))
+    print(embedding_list[0].shape)
 
-        break
+    # concat, mask and replace masked embeddings with embeddings of <pad>
 
     # use to one hot samples (straight through trick) to get vocab ids using dummy vocab
     rc_input = gumbel_output@dummy_vocab
