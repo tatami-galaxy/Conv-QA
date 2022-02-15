@@ -6,6 +6,8 @@ from transformers import Adafactor
 import torch
 from torch import nn
 import torch.nn.functional as F
+from os.path import dirname, abspath
+
 
 # qr_model.save_pretrained('~/Documents/conv-qa/models/pretrained_models/t5-base')
 
@@ -18,12 +20,18 @@ embed_dim = 768
 
 pretrained_model = 't5-base'
 
-tokenizer = T5Tokenizer.from_pretrained(pretrained_model)
-qr_model = T5ForConditionalGeneration.from_pretrained('/home/ujan/Documents/conv-qa/models/pretrained_models/t5-base')
-rc_model = T5ForConditionalGeneration.from_pretrained('/home/ujan/Documents/conv-qa/models/pretrained_models/t5-base')
+root = dirname(dirname(dirname(abspath(__file__))))
 
-qr_model.load_state_dict(torch.load('/home/ujan/Documents/conv-qa/models/finetuned_weights/qr_gen4.pth'))
-rc_model.load_state_dict(torch.load('/home/ujan/Documents/conv-qa/models/finetuned_weights/rc_gen5.pth'))
+tokenizer = T5Tokenizer.from_pretrained(pretrained_model)
+qr_model = T5ForConditionalGeneration.from_pretrained(root+'/models/pretrained_models/t5-base')
+rc_model = T5ForConditionalGeneration.from_pretrained(root+'/models/pretrained_models/t5-base')
+
+qr_model.load_state_dict(torch.load(root+'/models/finetuned_weights/qr_gen4.pth', map_location=torch.device('cpu')))
+rc_model.load_state_dict(torch.load(root+'/models/finetuned_weights/rc_gen5.pth', map_location=torch.device('cpu')))
+
+
+#qr_model.load_state_dict(torch.load(root+'/models/finetuned_weights/qr_gen4.pth'))
+#rc_model.load_state_dict(torch.load(root+'/models/finetuned_weights/rc_gen5.pth'))
 
 act_vocab_size = len(tokenizer.get_vocab())
 num_epochs = 2
@@ -42,8 +50,7 @@ optim = Adafactor(
     warmup_init=False
 )
 
-dataset = load_from_disk(
-    '/home/ujan/Documents/conv-qa/data/processed/dataset/')
+dataset = load_from_disk(root+'/data/processed/dataset/')
 dataset.set_format(type='torch', columns=['ctx_input_ids', 'rwrt_input_ids', 'psg_input_ids',
                    'ans_input_ids', 'ctx_attention_mask', 'rwrt_attention_mask', 'psg_attention_mask'],)
 
@@ -140,6 +147,8 @@ def forward(batch):
     mask = rwrt_attention.view(rwrt_attention.shape[0], -1, 1) @ torch.ones(1, embed_dim)
 
     inputs_embeds = torch.mul(inputs_embeds, mask)
+    print(inputs_embeds)
+    print(inputs_embeds.shape)
 
     #inputs_embeds[inputs_embeds.sum(dim=2)==0] = pad_embedding
 
