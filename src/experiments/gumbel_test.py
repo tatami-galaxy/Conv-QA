@@ -97,7 +97,10 @@ def forward(batch):
     norm_xcord = torch.linspace(-1, 1, embed_dim).to(device)	# normalized x coordinates. we need the entire vector so we will use all the coordinates
 
     embeddings = rc_model.get_input_embeddings().weight[:act_vocab_size, :]  # 32100, 768
-    #print(embeddings[410])
+
+    pad_embedding = embeddings[0] # embedding of <pad> token we need for masking. assuming the first embedding corresponds to the pad token
+    # convert mask to float from long
+
     embeddings = embeddings.view(1, 1, act_vocab_size, -1)  # 1, 1, 32100, 768
 
     embeddings = embeddings.repeat(gumbel_output.shape[0], 1, 1, 1)  # b, 1, 32100, 768  repeating embeddigs batch number of times
@@ -125,12 +128,26 @@ def forward(batch):
         token_embedding = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border') # b, 1, 1, 768
         token_embedding = token_embedding.view(token_embedding.shape[0], -1)
         
+        token_embedding = token_embedding.view(token_embedding.shape[0], 1, -1)
         embedding_list.append(token_embedding)
         
-    print(len(embedding_list))
-    print(embedding_list[0].shape)
+   
+    # concat, mask and replace masked embeddings with embeddings of <pad>`
 
-    # concat, mask and replace masked embeddings with embeddings of <pad>
+    inputs_embeds = torch.cat(embedding_list, dim=1)
+    
+    rwrt_attention = rwrt_attention.float()  # b, 384
+    mask = rwrt_attention.view(rwrt_attention.shape[0], -1, 1) @ torch.ones(1, embed_dim)
+
+    inputs_embeds = torch.mul(inputs_embeds, mask)
+
+    #inputs_embeds[inputs_embeds.sum(dim=2)==0] = pad_embedding
+
+    # need to add passages
+    # test word and positional embedding
+   
+    
+    
 
     # use to one hot samples (straight through trick) to get vocab ids using dummy vocab
     rc_input = gumbel_output@dummy_vocab
