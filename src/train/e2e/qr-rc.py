@@ -8,6 +8,31 @@ from torch import nn
 import numpy as np
 import torch.nn.functional as F
 from os.path import dirname, abspath
+from dataclasses import dataclass
+from collections import namedtuple
+
+@dataclass
+class Options:  # class for storing hyperparameters and other options
+
+    max_length : int = 384  # use interim data if changed 
+    batch_size : int = 4
+    embed_dim : int = 768  # typical base model embedding dimension
+    pretrained_model : str = 't5-base'
+
+    # adafactor hyperparameters
+    lr : float = 1e-5
+    eps: tuple = (1e-30, 1e-3)
+    clip_threshold : float = 1.0
+    decay_rate : float = -0.8
+    beta1 : float = None
+    weight_decay ; float = 0.0
+    relative_step : bool = False
+    scale_parameter : bool = False
+    warmup_init : bool = False
+
+    
+
+
 
 
 
@@ -296,12 +321,12 @@ for epoch in range(1, num_epochs+1):
 
         print('batch : {}'.format(idx))
 
-        if idx % 100 == 0:
+        if idx % 1000 == 0:
             print('epoch {}, batch {}'.format(epoch, idx))
 
-            for name, param in rc_model.named_parameters():
+            """for name, param in rc_model.named_parameters():
                 if param.requires_grad:
-                    print(name, param.grad)
+                    print(name, param.grad)"""
 
         idx += 1
 
