@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from os.path import dirname, abspath
 
 
-# qr_model.save_pretrained('~/Documents/conv-qa/models/pretrained_models/t5-base')
 
 device = torch.device('cpu')
 # device = torch.device('gpu')

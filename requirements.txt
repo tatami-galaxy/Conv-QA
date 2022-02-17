@@ -1,1 +1,5 @@
-The requirements file for reproducing the analysis environment
+pytorch
+transformers
+sentencepiece
+datasets
+tqdm
