@@ -11,8 +11,8 @@ from os.path import dirname, abspath
 
 
 
-device = torch.device('cpu')
-# device = torch.device('gpu')
+# device = torch.device('cpu')
+device = torch.device('cuda')
 
 max_length = 384
 batch_size = 4
@@ -29,8 +29,14 @@ tokenizer = T5Tokenizer.from_pretrained(pretrained_model)
 qr_model = T5ForConditionalGeneration.from_pretrained(root+'/models/pretrained_models/t5-base')
 rc_model = T5ForConditionalGeneration.from_pretrained(root+'/models/pretrained_models/t5-base')
 
-qr_model.load_state_dict(torch.load(root+'/models/finetuned_weights/qr_gen4.pth', map_location=torch.device('cpu')))
-rc_model.load_state_dict(torch.load(root+'/models/finetuned_weights/rc_gen5.pth', map_location=torch.device('cpu')))
+qr_model.to(device)
+rc_model.to(device)
+
+qr_model.train()
+rc_model.train()
+
+#qr_model.load_state_dict(torch.load(root+'/models/finetuned_weights/qr_gen4.pth', map_location=torch.device('cpu')))
+#rc_model.load_state_dict(torch.load(root+'/models/finetuned_weights/rc_gen5.pth', map_location=torch.device('cpu')))
 
 
 #qr_model.load_state_dict(torch.load(root+'/models/finetuned_weights/qr_gen4.pth'))
@@ -40,8 +46,7 @@ act_vocab_size = len(tokenizer.get_vocab())
 num_epochs = 2
 
 optim = Adafactor(
-    # list(qr_model.parameters())+list(rc_model.parameters()),
-    qr_model.parameters(),
+    list(qr_model.parameters())+list(rc_model.parameters()),
     lr=1e-5,
     eps=(1e-30, 1e-3),
     clip_threshold=1.0,
@@ -105,8 +110,7 @@ def forward(batch):
     ans_input = ans_input.to(device)
 
     # feed context+question input and rewrite label to qr model
-    qr_output = qr_model(input_ids=ctx_input,
-                         attention_mask=ctx_attention, labels=rwrt_input)
+    qr_output = qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input)
 
     # logits to be sampled from
     logits = qr_output.logits
@@ -166,13 +170,13 @@ def forward(batch):
     rwrt_attention_f = rwrt_attention.float()  # b, 384
     
     # mask rc input with attention mask
-    mask = rwrt_attention_f.view(rwrt_attention_f.shape[0], -1, 1) @ torch.ones(1, embed_dim)
+    mask = rwrt_attention_f.view(rwrt_attention_f.shape[0], -1, 1) @ (torch.ones(1, embed_dim)).to(device)
     inputs_embeds = torch.mul(inputs_embeds, mask)
 
-    print(inputs_embeds)
-    print(psg_input)
-    print(inputs_embeds.shape)
-    print(psg_input.shape)
+    #print(inputs_embeds)
+    #print(psg_input)
+    #print(inputs_embeds.shape)
+    #print(psg_input.shape)
     
 
     #inputs_embeds[inputs_embeds.sum(dim=2)==0] = pad_embedding
@@ -206,11 +210,11 @@ def forward(batch):
     shifts = (rwrt_attention == 1).sum(dim=1).reshape(-1, 1)
     # roll each row by the amount occupied by rc_input in that row
     trunc_psg = roll_by_gather(extr_psg, 1, shifts)
-    print(trunc_psg)
-    print(trunc_psg.shape)
+    #print(trunc_psg)
+    #print(trunc_psg.shape)
 
     trunc_psg = trunc_psg.view(trunc_psg.shape[0], -1, 1)
-    print(trunc_psg.shape)
+    #print(trunc_psg.shape)
     trunc_psg = trunc_psg.repeat(1, 1, embed_dim)
 
     trunc_psg = trunc_psg.float()
@@ -227,26 +231,25 @@ def forward(batch):
             #print(embeddings[idx].shape)
             trunc_psg[i][j] = word_embeddings[idx]
        
-    print(trunc_psg)
-    print(trunc_psg.shape) 
+    #print(trunc_psg)
+    #print(trunc_psg.shape) 
     #print(pad_embedding)
 
     inputs_embeds = torch.add(inputs_embeds, trunc_psg)
-    print(inputs_embeds)
-    print(inputs_embeds.shape)
-    print(inputs_embeds.requires_grad)
+    #print(inputs_embeds)
+    #print(inputs_embeds.shape)
+    #print(inputs_embeds.requires_grad)
 
-    rc_input = gumbel_output@dummy_vocab
+    #rc_input = gumbel_output@dummy_vocab
     # add to get rwrt + psg as rc_input
-    rc_input = torch.add(rc_input, trunc_psg)
+    #rc_input = torch.add(rc_input, trunc_psg)
     # create attention mask
-    rc_attention = rc_input.clone()
-    rc_attention[rc_input != 0] = 1
+    #rc_attention = rc_input.clone()
+    #rc_attention[rc_input != 0] = 1
 
-    del flipped_rwrt_mask, flipped_mask, extr_psg, shifts, trunc_psg, psg_input
+    #del flipped_rwrt_mask, flipped_mask, extr_psg, shifts, trunc_psg, psg_input
 
-    rc_loss = rc_model(input_ids=rc_input,
-                       attention_mask=rc_attention, labels=ans_input).loss
+    rc_loss = rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
     #del ans_input, rc_input, rc_attention
 
@@ -291,6 +294,8 @@ for epoch in range(1, num_epochs+1):
         # total_loss.backward()
         rc_loss.backward()
 
+        print('batch : {}'.format(idx))
+
         if idx % 100 == 0:
             print('epoch {}, batch {}'.format(epoch, idx))
 
@@ -298,9 +303,9 @@ for epoch in range(1, num_epochs+1):
                 if param.requires_grad:
                     print(name, param.grad)
 
+        idx += 1
+
+
         optim.step()
         optim.zero_grad()
 
-        break
-
-    break
