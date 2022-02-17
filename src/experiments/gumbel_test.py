@@ -21,7 +21,9 @@ embed_dim = 768
 
 pretrained_model = 't5-base'
 
-root = dirname(dirname(dirname(abspath(__file__))))
+root = abspath(__file__)
+while root.split('/')[-1] != 'conv-qa':
+    root = dirname(root)
 
 tokenizer = T5Tokenizer.from_pretrained(pretrained_model)
 qr_model = T5ForConditionalGeneration.from_pretrained(root+'/models/pretrained_models/t5-base')
