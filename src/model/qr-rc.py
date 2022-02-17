@@ -8,8 +8,9 @@ from torch import nn
 import numpy as np
 import torch.nn.functional as F
 from os.path import dirname, abspath
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import namedtuple
+from utils import *
 
 @dataclass
 class Options:  # class for storing hyperparameters and other options
@@ -17,7 +18,9 @@ class Options:  # class for storing hyperparameters and other options
     max_length : int = 384  # use interim data if changed 
     batch_size : int = 4
     embed_dim : int = 768  # typical base model embedding dimension
-    pretrained_model : str = 't5-base'
+    pretrained_model_name : str = 't5-base'
+    act_vocab_size : int = 32100  # get from tokenizer
+    num_epochs : int = 3
 
     # adafactor hyperparameters
     lr : float = 1e-5
@@ -30,14 +33,52 @@ class Options:  # class for storing hyperparameters and other options
     scale_parameter : bool = False
     warmup_init : bool = False
 
-    
+    # gumbel softmax
+    tau : float = 1.0
+
+    # directories
+    root : str = field(init=False)
+    pretrained_model : str = field(init=False)
+    qr_finetuned : str = field(init=False)
+    rc_finetuned : str = field(init=False)
+
+    # add methods to init dataclass attributes here
+    def __post__init(self):
+        self.root = self.get_root_dir()
+        self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
+        self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen4.pth'
+        self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen5.pth'
+        
+
     def get_root_dir(self):
         root = abspath(__file__)
-while root.split('/')[-1] != 'conv-qa':
-    root = dirname(root)
-   
+        while root.split('/')[-1] != 'conv-qa':
+            root = dirname(root)
+        return root
+
          
 
+class End2End(nn.Module):
+
+    def __init__(self, options, device):  
+        super().__init__()        
+
+        # load T5 models
+        self.qr_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_model)
+        self.rc_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_model)
+
+        self.qr_model.to(device)
+        self.rc_model.to(device)
+        
+        # load finetuned weights
+        self.qr_model.load_state_dict(torch.load(options.qr_finetuned, map_location=device))  # comment out to only use pretraining
+        self.rc_model.load_state_dict(torch.load(options.rc_finetuned, map_location=device))  # comment out to only use pretraining
+
+        self.qr_model.train()
+        self.rc_model.train()
+
+
+    def forward(self, batch):
 
 
 
@@ -151,7 +192,7 @@ def forward(batch):
 
     # gumbel softmax on the logits
     # slice upto actual vocabulary sizegumbel_softmax
-    gumbel_output = F.gumbel_softmax(logits, tau=1, hard=True)[..., :act_vocab_size]
+    gumbel_output = F.gumbel_softmax(logits, tau=tau, hard=True)[..., :act_vocab_size]
     # print(gumbel_output.shape) # b, 384, 32100
 
     # normalized y cordinates for the grid. we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
@@ -341,9 +382,5 @@ for epoch in range(1, num_epochs+1):
         optim.zero_grad()
 
 
-class End2EndModel(nn.Module):
-    
-    def __init__(self):
-        super().__init__()
 
         
