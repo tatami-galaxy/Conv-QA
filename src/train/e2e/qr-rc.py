@@ -31,6 +31,12 @@ class Options:  # class for storing hyperparameters and other options
     warmup_init : bool = False
 
     
+    def get_root_dir(self):
+        root = abspath(__file__)
+while root.split('/')[-1] != 'conv-qa':
+    root = dirname(root)
+   
+         
 
 
 
@@ -334,3 +340,10 @@ for epoch in range(1, num_epochs+1):
         optim.step()
         optim.zero_grad()
 
+
+class End2EndModel(nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+
+        
