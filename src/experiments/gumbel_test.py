@@ -5,6 +5,7 @@ from transformers import T5Model, T5ForConditionalGeneration, T5Tokenizer
 from transformers import Adafactor
 import torch
 from torch import nn
+import numpy as np
 import torch.nn.functional as F
 from os.path import dirname, abspath
 
@@ -54,10 +55,26 @@ dataset = load_from_disk(root+'/data/processed/dataset/')
 dataset.set_format(type='torch', columns=['ctx_input_ids', 'rwrt_input_ids', 'psg_input_ids',
                    'ans_input_ids', 'ctx_attention_mask', 'rwrt_attention_mask', 'psg_attention_mask'],)
 
-train_loader = torch.utils.data.DataLoader(
-    dataset['train'], batch_size=batch_size)
-test_loader = torch.utils.data.DataLoader(
-    dataset['test'], batch_size=batch_size)
+train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=batch_size)
+test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=batch_size)
+
+def roll_by_gather(mat, dim, shifts:torch.LongTensor):
+    # assumes 2D array
+    n_rows, n_cols = mat.shape
+    
+    if dim == 0:
+        #print(mat)
+        arange1 = torch.arange(n_rows).view((n_rows, 1)).repeat((1, n_cols)).to(device)
+        #print(arange1)
+        arange2 = (arange1 - shifts) % n_rows
+        #print(arange2)
+        return torch.gather(mat, 0, arange2)
+    elif dim == 1:
+        arange1 = torch.arange(n_cols).view((1,n_cols)).repeat((n_rows,1)).to(device)
+        #print(arange1)
+        arange2 = (arange1 - shifts) % n_cols
+        #print(arange2)
+        return torch.gather(mat, 1, arange2)
 
 
 def forward(batch):
@@ -100,15 +117,16 @@ def forward(batch):
     gumbel_output = F.gumbel_softmax(logits, tau=1, hard=True)[..., :act_vocab_size]
     # print(gumbel_output.shape) # b, 384, 32100
 
-    norm_ycord = torch.linspace(-1, 1, act_vocab_size).to(device) # normalized y cordinates for the grid. we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
+    # normalized y cordinates for the grid. we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
+    norm_ycord = torch.linspace(-1, 1, act_vocab_size).to(device) 
     norm_xcord = torch.linspace(-1, 1, embed_dim).to(device)	# normalized x coordinates. we need the entire vector so we will use all the coordinates
 
-    embeddings = rc_model.get_input_embeddings().weight[:act_vocab_size, :]  # 32100, 768
+    word_embeddings = rc_model.get_input_embeddings().weight[:act_vocab_size, :]  # 32100, 768
 
-    pad_embedding = embeddings[0] # embedding of <pad> token we need for masking. assuming the first embedding corresponds to the pad token
+    pad_embedding = word_embeddings[0] # embedding of <pad> token we need for masking. assuming the first embedding corresponds to the pad token
     # convert mask to float from long
 
-    embeddings = embeddings.view(1, 1, act_vocab_size, -1)  # 1, 1, 32100, 768
+    embeddings = word_embeddings.view(1, 1, act_vocab_size, -1)  # 1, 1, 32100, 768
 
     embeddings = embeddings.repeat(gumbel_output.shape[0], 1, 1, 1)  # b, 1, 32100, 768  repeating embeddigs batch number of times
 
@@ -143,12 +161,17 @@ def forward(batch):
 
     inputs_embeds = torch.cat(embedding_list, dim=1)
     
-    rwrt_attention = rwrt_attention.float()  # b, 384
-    mask = rwrt_attention.view(rwrt_attention.shape[0], -1, 1) @ torch.ones(1, embed_dim)
-
+    rwrt_attention_f = rwrt_attention.float()  # b, 384
+    
+    # mask rc input with attention mask
+    mask = rwrt_attention_f.view(rwrt_attention_f.shape[0], -1, 1) @ torch.ones(1, embed_dim)
     inputs_embeds = torch.mul(inputs_embeds, mask)
+
     print(inputs_embeds)
+    print(psg_input)
     print(inputs_embeds.shape)
+    print(psg_input.shape)
+    
 
     #inputs_embeds[inputs_embeds.sum(dim=2)==0] = pad_embedding
 
@@ -159,13 +182,14 @@ def forward(batch):
     
 
     # use to one hot samples (straight through trick) to get vocab ids using dummy vocab
-    rc_input = gumbel_output@dummy_vocab
-    rc_input = rc_input.to(device)
+    #rc_input = gumbel_output@dummy_vocab
+    #rc_input = rc_input.to(device)
 
-    del gumbel_output, qr_output, logits, ctx_input, ctx_attention, rwrt_input
+    #del gumbel_output, qr_output, logits, ctx_input, ctx_attention, rwrt_input
 
     # mask rc input ids with attention mask
-    rc_input = torch.mul(rc_input, rwrt_attention)
+    #rc_input = torch.mul(rc_input, rwrt_attention)
+
     # flip the rewrite attention mask, replace 1s with 0s and vice versa
     # now the 1s represent the 'free space' in the rc_input tensor to fit the passages
     flipped_rwrt_mask = torch.fliplr(rwrt_attention)
@@ -180,6 +204,37 @@ def forward(batch):
     shifts = (rwrt_attention == 1).sum(dim=1).reshape(-1, 1)
     # roll each row by the amount occupied by rc_input in that row
     trunc_psg = roll_by_gather(extr_psg, 1, shifts)
+    print(trunc_psg)
+    print(trunc_psg.shape)
+
+    trunc_psg = trunc_psg.view(trunc_psg.shape[0], -1, 1)
+    print(trunc_psg.shape)
+    trunc_psg = trunc_psg.repeat(1, 1, embed_dim)
+
+    trunc_psg = trunc_psg.float()
+    
+    # keep front zeros, replace end zeros with pad embedding
+
+    for i in range(trunc_psg.shape[0]):
+        flag = False
+        for j in range(max_length):
+            idx = trunc_psg[i][j][0].long()
+            if idx == 0 and flag == False: continue
+            flag = True
+            #print(trunc_psg[i][j].shape)
+            #print(embeddings[idx].shape)
+            trunc_psg[i][j] = word_embeddings[idx]
+       
+    print(trunc_psg)
+    print(trunc_psg.shape) 
+    #print(pad_embedding)
+
+    inputs_embeds = torch.add(inputs_embeds, trunc_psg)
+    print(inputs_embeds)
+    print(inputs_embeds.shape)
+    print(inputs_embeds.requires_grad)
+
+    rc_input = gumbel_output@dummy_vocab
     # add to get rwrt + psg as rc_input
     rc_input = torch.add(rc_input, trunc_psg)
     # create attention mask
