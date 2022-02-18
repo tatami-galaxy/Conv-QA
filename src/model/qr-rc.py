@@ -257,7 +257,7 @@ class End2End(nn.Module):
 
 if __name__ == '__main__':
 
-    device = torch.device('cuda')
+    device = torch.device('cpu')
 
     # hyperparameters and other options
     options = Options()
