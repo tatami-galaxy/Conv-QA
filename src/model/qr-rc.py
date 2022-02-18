@@ -131,7 +131,7 @@ class End2End(nn.Module):
         # slice upto actual vocabulary size
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
 
-        #gumbel_output.retain_grad()
+        gumbel_output.retain_grad()
         #demo_loss = (gumbel_output@torch.randn(32100, 384).to(device)).sum()
         #demo_loss.backward(retain_graph=True)
         #print(gumbel_output.grad)
@@ -171,7 +171,7 @@ class End2End(nn.Module):
 
             # list to hold reshaped gumbeli containing the grid to extract embeddings
             tensor_list = []
-            for j in range(len(nonz_ids)):
+            for j in range(len(nonz_ids)):  # zero grad somewhere in this loop
                 gumbeli[j, :, :] = gumbeli[j, :, nonz_ids[j]] # set all elements to the non zero elements
                 gumbeli_trunc = gumbeli[:, :, :options.embed_dim] # truncate to embed_dim
 
@@ -182,13 +182,16 @@ class End2End(nn.Module):
             gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
 
-            gumbeli.retain_grad()
+            demo_loss = (gumbeli@(torch.randn(2, 768)).to(device)).sum()
+            demo_loss.backward(retain_graph=True)
+            print(gumbel_output.grad)
+            break
 
             token_embedding = F.grid_sample(embeddings, gumbeli, mode='bilinear', padding_mode='border', align_corners=True) # b, 1, 1, 768  zero gradient with nearest
 
             #demo_loss = token_embedding.sum()
-            #demo_loss.backward()
-            #print(gumbeli.grad)
+            #demo_loss.backward(retain_graph=True)
+            #print(gumbel_output.grad)
             #break
 
             token_embedding = token_embedding.view(token_embedding.shape[0], -1)
