@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from collections import namedtuple
 from typing import List
 from utils import *
-from torchviz import make_dot
+#from torchviz import make_dot
 
 @dataclass
 class Options:  # class for storing hyperparameters and other options
@@ -119,7 +119,7 @@ class End2End(nn.Module):
         # logits to be sampled from
         logits = qr_output.logits
 
-        #logits.retain_grad()
+        logits.retain_grad()
 
         #print(qr_output.decoder_hidden_states[0].is_leaf)
         #make_dot(qr_output.decoder_hidden_states[0], params=dict(list(self.qr_model.named_parameters()))).render("t5_torchviz", format="png")
@@ -128,8 +128,10 @@ class End2End(nn.Module):
         qr_loss = qr_output.loss
 
         # gumbel softmax on the logits
-        # slice upto actual vocabulary sizegumbel_softmax
+        # slice upto actual vocabulary size
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
+
+        gumbel_output.retain_grad()
 
         # print(gumbel_output.shape) # b, 384, 32100
 
@@ -251,10 +253,15 @@ class End2End(nn.Module):
         #print(inputs_embeds.requires_grad)
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
+  
 
         rc_loss.backward(retain_graph=True)        
-        print(inputs_embeds.grad)
 
+        #print(inputs_embeds.grad)
+
+        #print(gumbel_output.grad)
+
+        print(logits.grad)
 
 
         return qr_loss, rc_loss
@@ -263,7 +270,7 @@ class End2End(nn.Module):
 
 if __name__ == '__main__':
 
-    device = torch.device('cpu')
+    device = torch.device('cuda')
 
     # hyperparameters and other options
     options = Options()
@@ -314,7 +321,7 @@ if __name__ == '__main__':
             idx += 1
 
             #optim.zero_grad()
-            #rc_loss.backward()
+            #rc_loss.backward(retain_graph=True)
 
             #for name, param in e2epipe.qr_model.named_parameters():
                 #if param.requires_grad: print(name, param.grad)
