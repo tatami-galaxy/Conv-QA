@@ -112,10 +112,13 @@ class End2End(nn.Module):
         ans_input = ans_input.to(device)
 
         # feed context+question input and rewrite label to qr model
-        qr_output = self.qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input)
+        qr_output = self.qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input, output_hidden_states=True)
+
+        print(qr_output.decoder_hidden_states[0].is_leaf)
 
         # logits to be sampled from
         logits = qr_output.logits
+
 
         # qr loss
         qr_loss = qr_output.loss
@@ -123,6 +126,7 @@ class End2End(nn.Module):
         # gumbel softmax on the logits
         # slice upto actual vocabulary sizegumbel_softmax
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
+
         # print(gumbel_output.shape) # b, 384, 32100
 
         # normalized y cordinates for the grid
@@ -242,8 +246,8 @@ class End2End(nn.Module):
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
-        rc_loss.backward()        
-        print(inputs_embeds.grad)
+        #rc_loss.backward(retain_graph=True)        
+        #print(inputs_embeds.grad)
 
 
 
