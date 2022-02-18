@@ -1,6 +1,6 @@
 import torch
 
-def roll_by_gather(mat, dim, shifts:torch.LongTensor):
+def roll_by_gather(mat, dim, shifts:torch.LongTensor, device):
     # assumes 2D array
     n_rows, n_cols = mat.shape
 

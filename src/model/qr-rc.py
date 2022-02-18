@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from os.path import dirname, abspath
 from dataclasses import dataclass, field
 from collections import namedtuple
+from typing import List
 from utils import *
 
 @dataclass
@@ -28,7 +29,7 @@ class Options:  # class for storing hyperparameters and other options
     clip_threshold : float = 1.0
     decay_rate : float = -0.8
     beta1 : float = None
-    weight_decay ; float = 0.0
+    weight_decay : float = 0.0
     relative_step : bool = False
     scale_parameter : bool = False
     warmup_init : bool = False
@@ -44,17 +45,16 @@ class Options:  # class for storing hyperparameters and other options
 
     # dataset
     processed_dataset_dir : str = field(init=False)
-    processed_dataset_format : list = ['ctx_input_ids', 'rwrt_input_ids', 'psg_input_ids',
-            'ans_input_ids', 'ctx_attention_mask', 'rwrt_attention_mask', 'psg_attention_mask'],)
+    processed_dataset_format : List = field(default_factory = lambda: ['ctx_input_ids', 'rwrt_input_ids', 'psg_input_ids',
+            'ans_input_ids', 'ctx_attention_mask', 'rwrt_attention_mask', 'psg_attention_mask'])
 
     # add methods to init dataclass attributes here
-    def __post__init(self):
+    def __post_init__(self):
 
         self.root = self.get_root_dir()
         self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
         self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen4.pth'
         self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen5.pth'
-
         self.processed_dataset_dir = self.root +'/data/processed/dataset/'
         
 
@@ -85,7 +85,7 @@ class End2End(nn.Module):
 
 
     
-    def forward(batch, options):
+    def forward(self, batch, options, device):
 
         # context + question input
         ctx_input = batch['ctx_input_ids'].to(device)  # QR input
@@ -112,7 +112,7 @@ class End2End(nn.Module):
         ans_input = ans_input.to(device)
 
         # feed context+question input and rewrite label to qr model
-        qr_output = qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input)
+        qr_output = self.qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input)
 
         # logits to be sampled from
         logits = qr_output.logits
@@ -127,24 +127,24 @@ class End2End(nn.Module):
 
         # normalized y cordinates for the grid
         # we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
-        norm_ycord = torch.linspace(-1, 1, act_vocab_size).to(device) 
-	    # normalized x coordinates. we need the entire vector so we will use all the coordinates
-        norm_xcord = torch.linspace(-1, 1, embed_dim).to(device)
+        norm_ycord = torch.linspace(-1, 1, options.act_vocab_size).to(device) 
+	# normalized x coordinates. we need the entire vector so we will use all the coordinates
+        norm_xcord = torch.linspace(-1, 1, options.embed_dim).to(device)
 
         # T5 input embeddings
-        word_embeddings = rc_model.get_input_embeddings().weight[:act_vocab_size, :]  # 32100, 768
+        word_embeddings = self.rc_model.get_input_embeddings().weight[:options.act_vocab_size, :]  # 32100, 768
 
         # embedding of <pad> token we need for masking. assuming the first embedding corresponds to the pad token
         pad_embedding = word_embeddings[0] 
 
         # reshape embeddings for input to grid_sample
-        embeddings = word_embeddings.view(1, 1, act_vocab_size, -1)  # 1, 1, 32100, 768
+        embeddings = word_embeddings.view(1, 1, options.act_vocab_size, -1)  # 1, 1, 32100, 768
         embeddings = embeddings.repeat(gumbel_output.shape[0], 1, 1, 1)  # b, 1, 32100, 768  repeating embeddigs batch number of times
 
         # list to store the embeddings per max_length position
         embedding_list = []
     
-        for i in range(max_length):
+        for i in range(options.max_length):
             gumbeli = gumbel_output[:, i, :]  # ith token in the sequence
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # reshaping to make grid
 
@@ -158,14 +158,14 @@ class End2End(nn.Module):
             tensor_list = []
             for j in range(len(nonz_ids)):
                 gumbeli[j, :, :] = gumbeli[j, :, nonz_ids[j]] # set all elements to the non zero elements
-                gumbeli_trunc = gumbeli[:, :, :embed_dim] # truncate to embed_dim
+                gumbeli_trunc = gumbeli[:, :, :options.embed_dim] # truncate to embed_dim
 
                 # cat the normalized x coordinates
-                tensorj = torch.cat((norm_xcord.view(1, embed_dim).T, gumbeli_trunc[j].T), dim = 1).view(1, embed_dim, 2)
+                tensorj = torch.cat((norm_xcord.view(1, options.embed_dim).T, gumbeli_trunc[j].T), dim = 1).view(1, options.embed_dim, 2)
                 tensor_list.append(tensorj)
             
             gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
-            gumbeli = gumbeli.view(gumbeli.shape[0], 1, embed_dim, 2) # b, 1, 768, 2
+            gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
 
             token_embedding = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border') # b, 1, 1, 768
             token_embedding = token_embedding.view(token_embedding.shape[0], -1)
@@ -182,7 +182,7 @@ class End2End(nn.Module):
     
         # mask rc input (inputs_embeds) with attention mask
         # masked positions are replaced with 0.0 vectors
-        mask = rwrt_attention_f.view(rwrt_attention_f.shape[0], -1, 1) @ (torch.ones(1, embed_dim)).to(device)  # reshape mask
+        mask = rwrt_attention_f.view(rwrt_attention_f.shape[0], -1, 1) @ (torch.ones(1, options.embed_dim)).to(device)  # reshape mask
         inputs_embeds = torch.mul(inputs_embeds, mask)
 
         #print(inputs_embeds)
@@ -206,14 +206,14 @@ class End2End(nn.Module):
         # reshape to column vector as required by the custom gather function
         shifts = (rwrt_attention == 1).sum(dim=1).reshape(-1, 1)
         # roll each row by the amount occupied by rc_input in that row
-        trunc_psg = roll_by_gather(extr_psg, 1, shifts)
+        trunc_psg = roll_by_gather(extr_psg, 1, shifts, device)
 
         #print(trunc_psg)
         #print(trunc_psg.shape)
 
         # reshape and repeat values for changing into embeddings afterwards
         trunc_psg = trunc_psg.view(trunc_psg.shape[0], -1, 1)
-        trunc_psg = trunc_psg.repeat(1, 1, embed_dim)
+        trunc_psg = trunc_psg.repeat(1, 1, options.embed_dim)
         # cast to float
         trunc_psg = trunc_psg.float()
     
@@ -221,7 +221,7 @@ class End2End(nn.Module):
         # replace end zeros with pad embedding
         for i in range(trunc_psg.shape[0]):
             flag = False
-            for j in range(max_length):
+            for j in range(options.max_length):
                 idx = trunc_psg[i][j][0].long()
                 if idx == 0 and flag == False: continue
                 flag = True
@@ -240,7 +240,7 @@ class End2End(nn.Module):
         #print(inputs_embeds.shape)
         #print(inputs_embeds.requires_grad)
 
-        rc_loss = rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
+        rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
 
         return qr_loss, rc_loss
@@ -249,7 +249,7 @@ class End2End(nn.Module):
 
 if __name__ == '__main__':
 
-    device = torch.device('gpu')
+    device = torch.device('cuda')
 
     # hyperparameters and other options
     options = Options()
@@ -260,26 +260,30 @@ if __name__ == '__main__':
     e2epipe.load_weights(device)  # finetuned weights
     e2epipe.train()
 
+    # tokenizer (need to save)
+    tokenizer = T5Tokenizer.from_pretrained(options.pretrained_model_name)
+
     # optimizer
     optim = Adafactor(
+            e2epipe.parameters(),
             lr = options.lr,
             eps = options.eps,
             clip_threshold = options.clip_threshold,
             decay_rate = options.decay_rate,
             beta1 = options.beta1,
-            weight_decay = options.weight_decay
-            relative_ste p= options.relative_step,
+            weight_decay = options.weight_decay,
+            relative_step= options.relative_step,
             scale_parameter = options.scale_parameter,
             warmup_init = options.warmup_init)
 
     # dataset
 
     dataset = load_from_disk(options.processed_dataset_dir)
-    dataset.set_format(type='torch', columns=processed_dataset_format)
+    dataset.set_format(type='torch', columns = options.processed_dataset_format,)
 
     # dataloaders
-    train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=batch_size)
-    test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=batch_size)
+    train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=options.batch_size)
+    test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=options.batch_size)
 
     # train loop
     for epoch in range(1, options.num_epochs + 1):
@@ -288,10 +292,10 @@ if __name__ == '__main__':
 
         for batch in train_loader:
 
-            qr_loss, rc_loss = e2epipe(batch, options)
+            qr_loss, rc_loss = e2epipe(batch, options, device)  
 
-            if idx % 100 == 0:
-                print('epoch {}, batch {}'.format(epoch, idx))
+            #if idx % 100 == 0:
+            print('epoch {}, batch {}'.format(epoch, idx))
 
             idx += 1
 
