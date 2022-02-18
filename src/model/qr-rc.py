@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from collections import namedtuple
 from typing import List
 from utils import *
+from torchviz import make_dot
 
 @dataclass
 class Options:  # class for storing hyperparameters and other options
@@ -114,11 +115,14 @@ class End2End(nn.Module):
         # feed context+question input and rewrite label to qr model
         qr_output = self.qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input, output_hidden_states=True)
 
-        print(qr_output.decoder_hidden_states[0].is_leaf)
 
         # logits to be sampled from
         logits = qr_output.logits
 
+        #logits.retain_grad()
+
+        #print(qr_output.decoder_hidden_states[0].is_leaf)
+        #make_dot(qr_output.decoder_hidden_states[0], params=dict(list(self.qr_model.named_parameters()))).render("t5_torchviz", format="png")
 
         # qr loss
         qr_loss = qr_output.loss
@@ -132,7 +136,7 @@ class End2End(nn.Module):
         # normalized y cordinates for the grid
         # we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
         norm_ycord = torch.linspace(-1, 1, options.act_vocab_size).to(device) 
-	# normalized x coordinates. we need the entire vector so we will use all the coordinates
+      	# normalized x coordinates. we need the entire vector so we will use all the coordinates
         norm_xcord = torch.linspace(-1, 1, options.embed_dim).to(device)
 
         # T5 input embeddings
@@ -240,14 +244,16 @@ class End2End(nn.Module):
         # add inputs_embeds and masked passage embeddings
         inputs_embeds = torch.add(inputs_embeds, trunc_psg)
 
+        inputs_embeds.retain_grad()
+
         #print(inputs_embeds)
         #print(inputs_embeds.shape)
         #print(inputs_embeds.requires_grad)
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
-        #rc_loss.backward(retain_graph=True)        
-        #print(inputs_embeds.grad)
+        rc_loss.backward(retain_graph=True)        
+        print(inputs_embeds.grad)
 
 
 
@@ -314,6 +320,10 @@ if __name__ == '__main__':
                 #if param.requires_grad: print(name, param.grad)
 
             #optim.step()
+
+            break
+        break
+
 
 
 
