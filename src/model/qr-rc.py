@@ -247,85 +247,62 @@ class End2End(nn.Module):
 
 
 
-
-
-
-optim = Adafactor(
-    list(qr_model.parameters())+list(rc_model.parameters()),
-    lr=1e-5,
-    eps=(1e-30, 1e-3),
-    clip_threshold=1.0,
-    decay_rate=-0.8,
-    beta1=None,
-    weight_decay=0.0,
-    relative_step=False,
-    scale_parameter=False,
-    warmup_init=False
-)
-
-dataset = load_from_disk(root+'/data/processed/dataset/')
-dataset.set_format(type='torch', columns=['ctx_input_ids', 'rwrt_input_ids', 'psg_input_ids', 'ans_input_ids', 'ctx_attention_mask', 'rwrt_attention_mask', 'psg_attention_mask'],)
-
-train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=batch_size)
-test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=batch_size)
-
-
-
-def valid_loss():
-
-    qr_epoch_loss = 0
-    rc_epoch_loss = 0
-    idx = 0
-
-    for batch in test_loader:
-
-        qr_loss, rc_loss = forward(batch)
-
-        qr_epoch_loss += qr_loss.item()
-        rc_epoch_loss += rc_loss.item()
-
-        #del ans_input, rc_input, rc_attention
-        del qr_loss, rc_loss
-
-        idx += 1
-
-    print('Valid loss : {}, {}'.format(qr_epoch_loss/idx, rc_epoch_loss/idx))
-
-
-for epoch in range(1, num_epochs+1):
-
-    qr_epoch_loss = 0
-    rc_epoch_loss = 0
-
-    idx = 1
-
-    for batch in train_loader:
-
-        qr_loss, rc_loss = forward(batch)
-        #total_loss = sum([qr_loss, rc_loss])
-        qr_epoch_loss += qr_loss.item()
-        rc_epoch_loss += rc_loss.item()
-
-        # total_loss.backward()
-        rc_loss.backward()
-
-        print('batch : {}'.format(idx))
-
-        if idx % 1000 == 0:
-            print('epoch {}, batch {}'.format(epoch, idx))
-
-            """for name, param in rc_model.named_parameters():
-                if param.requires_grad:
-                    print(name, param.grad)"""
-
-        idx += 1
-
-
-        optim.step()
-        optim.zero_grad()
-
 if __name__ == '__main__':
 
-    e2epipe = 
+    device = torch.device('gpu')
+
+    # hyperparameters and other options
+    options = Options()
+
+    # end to end model
+    e2epipe = End2End(options)
+    e2epipe.to(device) 
+    e2epipe.load_weights(device)  # finetuned weights
+    e2epipe.train()
+
+    # optimizer
+    optim = Adafactor(
+            lr = options.lr,
+            eps = options.eps,
+            clip_threshold = options.clip_threshold,
+            decay_rate = options.decay_rate,
+            beta1 = options.beta1,
+            weight_decay = options.weight_decay
+            relative_ste p= options.relative_step,
+            scale_parameter = options.scale_parameter,
+            warmup_init = options.warmup_init)
+
+    # dataset
+
+    dataset = load_from_disk(options.processed_dataset_dir)
+    dataset.set_format(type='torch', columns=processed_dataset_format)
+
+    # dataloaders
+    train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=batch_size)
+    test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=batch_size)
+
+    # train loop
+    for epoch in range(1, options.num_epochs + 1):
+
+        idx = 1
+
+        for batch in train_loader:
+
+            qr_loss, rc_loss = e2epipe(batch, options)
+
+            if idx % 100 == 0:
+                print('epoch {}, batch {}'.format(epoch, idx))
+
+            idx += 1
+
+            optim.zero_grad()
+            rc_loss.backward()
+            optim.step()
+
+
+
+
+    
+
 
         
