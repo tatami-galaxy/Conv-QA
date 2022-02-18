@@ -301,6 +301,10 @@ if __name__ == '__main__':
 
             optim.zero_grad()
             rc_loss.backward()
+
+            for name, param in e2epipe.qr_model.named_parameters():
+                if param.requires_grad: print(name, param.grad)
+
             optim.step()
 
 
