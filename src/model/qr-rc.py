@@ -242,6 +242,10 @@ class End2End(nn.Module):
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
+        rc_loss.backward()        
+        print(inputs_embeds.grad)
+
+
 
         return qr_loss, rc_loss
 
@@ -299,13 +303,13 @@ if __name__ == '__main__':
 
             idx += 1
 
-            optim.zero_grad()
-            rc_loss.backward()
+            #optim.zero_grad()
+            #rc_loss.backward()
 
-            for name, param in e2epipe.qr_model.named_parameters():
-                if param.requires_grad: print(name, param.grad)
+            #for name, param in e2epipe.qr_model.named_parameters():
+                #if param.requires_grad: print(name, param.grad)
 
-            optim.step()
+            #optim.step()
 
 
 
