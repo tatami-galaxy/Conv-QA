@@ -131,7 +131,10 @@ class End2End(nn.Module):
         # slice upto actual vocabulary size
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
 
-        gumbel_output.retain_grad()
+        #gumbel_output.retain_grad()
+        #demo_loss = (gumbel_output@torch.randn(32100, 384).to(device)).sum()
+        #demo_loss.backward(retain_graph=True)
+        #print(gumbel_output.grad)
 
         # print(gumbel_output.shape) # b, 384, 32100
 
@@ -153,9 +156,11 @@ class End2End(nn.Module):
 
         # list to store the embeddings per max_length position
         embedding_list = []
+
+        debug_tensor = torch.randn(10)
     
         for i in range(options.max_length):
-            gumbeli = gumbel_output[:, i, :]  # ith token in the sequence
+            gumbeli = gumbel_output[:, i, :]  # ith token in the sequence  Maybe use the original gumbel_output somehow?
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # reshaping to make grid
 
             # getting normalized y coord  # b, 1, 32100
@@ -177,13 +182,23 @@ class End2End(nn.Module):
             gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
 
-            token_embedding = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border') # b, 1, 1, 768
+            gumbeli.retain_grad()
+
+            token_embedding = F.grid_sample(embeddings, gumbeli, mode='bilinear', padding_mode='border', align_corners=True) # b, 1, 1, 768  zero gradient with nearest
+
+            #demo_loss = token_embedding.sum()
+            #demo_loss.backward()
+            #print(gumbeli.grad)
+            #break
+
             token_embedding = token_embedding.view(token_embedding.shape[0], -1)
         
             token_embedding = token_embedding.view(token_embedding.shape[0], 1, -1)
             embedding_list.append(token_embedding)
         
    
+        debug_tensor.retain_grad()
+
         # concat embeddings for max_length positions for batch
         inputs_embeds = torch.cat(embedding_list, dim=1)
     
@@ -261,7 +276,7 @@ class End2End(nn.Module):
 
         #print(gumbel_output.grad)
 
-        print(logits.grad)
+        #print(debug_tensor.grad)
 
 
         return qr_loss, rc_loss
