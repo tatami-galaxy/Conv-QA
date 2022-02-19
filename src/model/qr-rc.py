@@ -119,7 +119,6 @@ class End2End(nn.Module):
         # logits to be sampled from
         logits = qr_output.logits
 
-        logits.retain_grad()
         #print(logits)
         #quit()
 
@@ -159,10 +158,6 @@ class End2End(nn.Module):
         # list to store the embeddings per max_length position
         embedding_list = []
 
-        debug_tensor = torch.randn(10)
-
-        flag = True
-    
         for i in range(options.max_length):
             gumbeli = gumbel_output[:, i, :]  # ith token in the sequence  Maybe use the original gumbel_output somehow? ###### grad zero here
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # reshaping to make grid
@@ -183,46 +178,19 @@ class End2End(nn.Module):
                 # cat the normalized x coordinates
                 tensorj = torch.cat((norm_xcord.view(1, options.embed_dim).T, gumbeli_trunc[j].T), dim = 1).view(1, options.embed_dim, 2)
 
-                if flag: 
-                    debug_tensor = tensorj
-                    flag = False               
-
-                #demo_loss = tensorj.sum()
-                #demo_loss.backward(retain_graph=True)
-                #print(gumbel_output.grad)
-                #quit()
-   
-
-
                 tensor_list.append(tensorj)
 
             gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
 
-            #demo_loss = tensorj.sum()
-            #demo_loss.backward(retain_graph=True)
-            #print(gumbel_output.grad)
-            #quit()
-   
-
-
             token_embedding = F.grid_sample(embeddings, gumbeli, mode='bilinear', padding_mode='border', align_corners=True) # b, 1, 1, 768  zero gradient with nearest
 
-            #if flag:
-                #debug_tensor = gumbeli
-                #debug_tensor = gumbel_output[:, i, :]
-                #flag = False
-
-            token_embedding = token_embedding.view(token_embedding.shape[0], -1)
-        
             token_embedding = token_embedding.view(token_embedding.shape[0], 1, -1)
             embedding_list.append(token_embedding)
         
    
         # concat embeddings for max_length positions for batch
         inputs_embeds = torch.cat(embedding_list, dim=1)
-
-        debug_tensor.retain_grad()
 
     
         # cast rewrite attention mask to float
