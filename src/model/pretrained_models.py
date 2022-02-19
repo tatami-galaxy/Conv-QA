@@ -6,6 +6,7 @@ from transformers import Adafactor
 import torch
 from torch import nn
 import torch.nn.functional as F
+from os.path import dirname, abspath
 
 pretrained_model = 't5-base'
 #pretrained_model = 'google/t5-v1_1-base'
@@ -18,5 +19,5 @@ root = abspath(__file__)
 while root.split('/')[-1] != 'conv-qa':
     root = dirname(root)
 
-qr_model.save_pretrained(root+'/models/pretrained_models/t5-base')
+#qr_model.save_pretrained(root+'/models/pretrained_models/t5-base')
 tokenizer.save_pretrained(root+'/models/pretrained_models/t5-tokenizer')
