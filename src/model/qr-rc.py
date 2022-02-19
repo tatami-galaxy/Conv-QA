@@ -43,6 +43,7 @@ class Options:  # class for storing hyperparameters and other options
     pretrained_model : str = field(init=False)
     qr_finetuned : str = field(init=False)
     rc_finetuned : str = field(init=False)
+    tokenizer : str = field(init=False)
 
     # dataset
     processed_dataset_dir : str = field(init=False)
@@ -56,6 +57,8 @@ class Options:  # class for storing hyperparameters and other options
         self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
         self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen4.pth'
         self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen5.pth'
+        self.tokenizer = self.root + '/models/pretrained_models/t5-tokenizer'
+
         self.processed_dataset_dir = self.root +'/data/processed/dataset/'
         
 
@@ -119,23 +122,12 @@ class End2End(nn.Module):
         # logits to be sampled from
         logits = qr_output.logits
 
-        #print(logits)
-        #quit()
-
-        #print(qr_output.decoder_hidden_states[0].is_leaf)
-        #make_dot(qr_output.decoder_hidden_states[0], params=dict(list(self.qr_model.named_parameters()))).render("t5_torchviz", format="png")
-
         # qr loss
         qr_loss = qr_output.loss
 
         # gumbel softmax on the logits
         # slice upto actual vocabulary size
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
-
-        gumbel_output.retain_grad()
-        #demo_loss = (gumbel_output@torch.randn(32100, 384).to(device)).sum()
-        #demo_loss.backward(retain_graph=True)
-        #print(gumbel_output.grad)
 
         # print(gumbel_output.shape) # b, 384, 32100
 
@@ -255,18 +247,8 @@ class End2End(nn.Module):
         # add inputs_embeds and masked passage embeddings
         inputs_embeds = torch.add(inputs_embeds, trunc_psg)
 
-    
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
   
-        rc_loss.backward(retain_graph=True)        
-
-        #print(inputs_embeds.grad)
-
-        print(logits.grad)
-
-        #print(debug_tensor.grad)
-
-
         return qr_loss, rc_loss
 
 
@@ -284,8 +266,8 @@ if __name__ == '__main__':
     e2epipe.load_weights(device)  # finetuned weights
     e2epipe.train()
 
-    # tokenizer (need to save)
-    tokenizer = T5Tokenizer.from_pretrained(options.pretrained_model_name)
+    # tokenizer
+    tokenizer = T5Tokenizer.from_pretrained(options.tokenizer)
 
     # optimizer
     optim = Adafactor(
@@ -323,16 +305,15 @@ if __name__ == '__main__':
 
             idx += 1
 
-            #optim.zero_grad()
-            #rc_loss.backward(retain_graph=True)
+            optim.zero_grad()
+            rc_loss.backward()
 
             #for name, param in e2epipe.qr_model.named_parameters():
                 #if param.requires_grad: print(name, param.grad)
 
-            #optim.step()
+            optim.step()
 
-            break
-        break
+ 
 
 
 
