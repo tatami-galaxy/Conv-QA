@@ -263,7 +263,7 @@ if __name__ == '__main__':
     # end to end model
     e2epipe = End2End(options)
     e2epipe.to(device) 
-    e2epipe.load_weights(device)  # finetuned weights
+    #e2epipe.load_weights(device)  # finetuned weights
     e2epipe.train()
 
     # tokenizer
@@ -300,8 +300,8 @@ if __name__ == '__main__':
 
             qr_loss, rc_loss = e2epipe(batch, options, device)  
 
-            #if idx % 100 == 0:
-            print('epoch {}, batch {}'.format(epoch, idx))
+            if idx % 1000 == 0:
+                print('epoch {}, batch {}'.format(epoch, idx))
 
             idx += 1
 
