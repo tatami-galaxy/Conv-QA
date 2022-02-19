@@ -132,6 +132,9 @@ class End2End(nn.Module):
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
 
         gumbel_output.retain_grad()
+        #demo_loss = (gumbel_output@torch.randn(32100, 384).to(device)).sum()
+        #demo_loss.backward(retain_graph=True)
+        #print(gumbel_output.grad)
 
         # print(gumbel_output.shape) # b, 384, 32100
 
@@ -153,9 +156,13 @@ class End2End(nn.Module):
 
         # list to store the embeddings per max_length position
         embedding_list = []
+
+        debug_tensor = torch.randn(10)
+
+        flag = True
     
         for i in range(options.max_length):
-            gumbeli = gumbel_output[:, i, :]  # ith token in the sequence
+            gumbeli = gumbel_output[:, i, :]  # ith token in the sequence  Maybe use the original gumbel_output somehow? ###### grad zero here
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # reshaping to make grid
 
             # getting normalized y coord  # b, 1, 32100
@@ -166,18 +173,24 @@ class End2End(nn.Module):
 
             # list to hold reshaped gumbeli containing the grid to extract embeddings
             tensor_list = []
-            for j in range(len(nonz_ids)):
+            for j in range(len(nonz_ids)):  # zero grad somewhere in this loop
                 gumbeli[j, :, :] = gumbeli[j, :, nonz_ids[j]] # set all elements to the non zero elements
                 gumbeli_trunc = gumbeli[:, :, :options.embed_dim] # truncate to embed_dim
 
                 # cat the normalized x coordinates
                 tensorj = torch.cat((norm_xcord.view(1, options.embed_dim).T, gumbeli_trunc[j].T), dim = 1).view(1, options.embed_dim, 2)
                 tensor_list.append(tensorj)
-            
+           
             gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
 
-            token_embedding = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border') # b, 1, 1, 768
+            token_embedding = F.grid_sample(embeddings, gumbeli, mode='bilinear', padding_mode='border', align_corners=True) # b, 1, 1, 768  zero gradient with nearest
+
+            if flag:
+                #debug_tensor = gumbeli
+                debug_tensor = gumbel_output[:, i, :]
+                flag = False
+
             token_embedding = token_embedding.view(token_embedding.shape[0], -1)
         
             token_embedding = token_embedding.view(token_embedding.shape[0], 1, -1)
@@ -186,6 +199,9 @@ class End2End(nn.Module):
    
         # concat embeddings for max_length positions for batch
         inputs_embeds = torch.cat(embedding_list, dim=1)
+
+        debug_tensor.retain_grad()
+
     
         # cast rewrite attention mask to float
         rwrt_attention_f = rwrt_attention.float()  # b, 384
@@ -193,7 +209,10 @@ class End2End(nn.Module):
         # mask rc input (inputs_embeds) with attention mask
         # masked positions are replaced with 0.0 vectors
         mask = rwrt_attention_f.view(rwrt_attention_f.shape[0], -1, 1) @ (torch.ones(1, options.embed_dim)).to(device)  # reshape mask
+
+        #print(inputs_embeds)
         inputs_embeds = torch.mul(inputs_embeds, mask)
+
 
         #print(inputs_embeds)
         #print(psg_input)
@@ -246,22 +265,16 @@ class End2End(nn.Module):
         # add inputs_embeds and masked passage embeddings
         inputs_embeds = torch.add(inputs_embeds, trunc_psg)
 
-        inputs_embeds.retain_grad()
-
-        #print(inputs_embeds)
-        #print(inputs_embeds.shape)
-        #print(inputs_embeds.requires_grad)
-
+    
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
   
-
         rc_loss.backward(retain_graph=True)        
 
         #print(inputs_embeds.grad)
 
         #print(gumbel_output.grad)
 
-        print(logits.grad)
+        print(debug_tensor.grad)
 
 
         return qr_loss, rc_loss
