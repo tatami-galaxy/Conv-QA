@@ -19,5 +19,5 @@ root = abspath(__file__)
 while root.split('/')[-1] != 'conv-qa':
     root = dirname(root)
 
-#qr_model.save_pretrained(root+'/models/pretrained_models/t5-base')
+qr_model.save_pretrained(root+'/models/pretrained_models/t5-base')
 tokenizer.save_pretrained(root+'/models/pretrained_models/t5-tokenizer')
