@@ -120,6 +120,8 @@ class End2End(nn.Module):
         logits = qr_output.logits
 
         logits.retain_grad()
+        #print(logits)
+        #quit()
 
         #print(qr_output.decoder_hidden_states[0].is_leaf)
         #make_dot(qr_output.decoder_hidden_states[0], params=dict(list(self.qr_model.named_parameters()))).render("t5_torchviz", format="png")
@@ -171,6 +173,7 @@ class End2End(nn.Module):
             nonz_ids = torch.nonzero(gumbeli)[:, -1]
             #print(nonz_ids)
 
+
             # list to hold reshaped gumbeli containing the grid to extract embeddings
             tensor_list = []
             for j in range(len(nonz_ids)):  # zero grad somewhere in this loop
@@ -179,17 +182,36 @@ class End2End(nn.Module):
 
                 # cat the normalized x coordinates
                 tensorj = torch.cat((norm_xcord.view(1, options.embed_dim).T, gumbeli_trunc[j].T), dim = 1).view(1, options.embed_dim, 2)
+
+                if flag: 
+                    debug_tensor = tensorj
+                    flag = False               
+
+                #demo_loss = tensorj.sum()
+                #demo_loss.backward(retain_graph=True)
+                #print(gumbel_output.grad)
+                #quit()
+   
+
+
                 tensor_list.append(tensorj)
-           
+
             gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
 
+            #demo_loss = tensorj.sum()
+            #demo_loss.backward(retain_graph=True)
+            #print(gumbel_output.grad)
+            #quit()
+   
+
+
             token_embedding = F.grid_sample(embeddings, gumbeli, mode='bilinear', padding_mode='border', align_corners=True) # b, 1, 1, 768  zero gradient with nearest
 
-            if flag:
+            #if flag:
                 #debug_tensor = gumbeli
-                debug_tensor = gumbel_output[:, i, :]
-                flag = False
+                #debug_tensor = gumbel_output[:, i, :]
+                #flag = False
 
             token_embedding = token_embedding.view(token_embedding.shape[0], -1)
         
@@ -272,9 +294,9 @@ class End2End(nn.Module):
 
         #print(inputs_embeds.grad)
 
-        #print(gumbel_output.grad)
+        print(logits.grad)
 
-        print(debug_tensor.grad)
+        #print(debug_tensor.grad)
 
 
         return qr_loss, rc_loss
