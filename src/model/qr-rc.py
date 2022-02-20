@@ -157,7 +157,7 @@ class End2End(nn.Module):
         embedding_list = []
 
         for i in range(options.max_length):
-            gumbeli = gumbel_output[:, i, :]  # ith token in the sequence  Maybe use the original gumbel_output somehow? ###### grad zero here
+            gumbeli = gumbel_output[:, i, :]  # ith token in the sequence 
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # reshaping to make grid
 
             # getting normalized y coord  # b, 1, 32100
@@ -296,6 +296,10 @@ if __name__ == '__main__':
     # dataloaders
     train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=options.batch_size)
     test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=options.batch_size)
+
+    print('Number of batches : {}'.format(len(train_loader)))
+
+    print('Start training')
 
     # train loop
     for epoch in range(1, options.num_epochs + 1):
