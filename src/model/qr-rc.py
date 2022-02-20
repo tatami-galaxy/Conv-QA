@@ -251,6 +251,8 @@ class End2End(nn.Module):
   
         return qr_loss, rc_loss
 
+def valid_loss():
+
 
 
 if __name__ == '__main__':
@@ -296,22 +298,50 @@ if __name__ == '__main__':
 
         idx = 1
 
+        qr_epoch_loss = 0
+        rc_epoch_loss = 0
+
         for batch in train_loader:
 
             qr_loss, rc_loss = e2epipe(batch, options, device)  
 
-            if idx % 1000 == 0:
+            qr_epoch_loss += qr_loss.item()
+            rc_epoch_loss += rc_loss.item()
+
+            total_loss = sum([qr_loss, rc_loss])
+
+            if idx % 500 == 0:
                 print('epoch {}, batch {}'.format(epoch, idx))
 
             idx += 1
 
             optim.zero_grad()
-            rc_loss.backward()
+            total_loss.backward()
 
             #for name, param in e2epipe.qr_model.named_parameters():
                 #if param.requires_grad: print(name, param.grad)
 
             optim.step()
+
+        print('Train loss : {}, {}'.format(qr_epoch_loss/len(train_loader), rc_epoch_loss/len(train_loader)))
+
+        e2epipe.eval()
+
+        # valid loop
+        qr_valid_loss = 0
+        rc_valid_loss = 0
+
+        for batch in test_loader:
+            qr_loss, rc_loss = e2epipe(batch, options, device)
+            qr_valid_loss += qr_loss.item()
+            rc_valid_loss += rc_loss.item()
+
+
+        print('\n')
+        e2epipe.train()
+        e2epipe.save_models(epoch)
+
+
 
  
 
