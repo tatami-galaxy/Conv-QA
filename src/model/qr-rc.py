@@ -88,6 +88,12 @@ class End2End(nn.Module):
         self.rc_model.load_state_dict(torch.load(options.rc_finetuned, map_location=device))  
 
 
+    def save_models(self, options, epoch):
+
+        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_s_qr'+str(epoch)+'.pth')
+        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_s_rc'+str(epoch)+'.pth')
+
+
     
     def forward(self, batch, options, device):
 
@@ -251,8 +257,6 @@ class End2End(nn.Module):
   
         return qr_loss, rc_loss
 
-def valid_loss():
-
 
 
 if __name__ == '__main__':
@@ -331,13 +335,20 @@ if __name__ == '__main__':
         qr_valid_loss = 0
         rc_valid_loss = 0
 
+        idx = 0
+
         for batch in test_loader:
+
             qr_loss, rc_loss = e2epipe(batch, options, device)
             qr_valid_loss += qr_loss.item()
             rc_valid_loss += rc_loss.item()
 
+            idx += 1
+
+        print('Valid loss : {}, {}'.format(qr_valid_loss/idx, rc_valid_loss/idx))
 
         print('\n')
+
         e2epipe.train()
         e2epipe.save_models(epoch)
 
