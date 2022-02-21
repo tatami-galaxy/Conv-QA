@@ -331,6 +331,8 @@ if __name__ == '__main__':
 
             optim.step()
 
+            del qr_loss, rc_loss, total_loss
+
         print('Train loss : {}, {}'.format(qr_epoch_loss/len(train_loader), rc_epoch_loss/len(train_loader)))
 
         e2epipe.eval()
@@ -349,12 +351,14 @@ if __name__ == '__main__':
 
             idx += 1
 
+            del qr_loss, rc_loss
+
         print('Valid loss : {}, {}'.format(qr_valid_loss/idx, rc_valid_loss/idx))
 
         print('\n')
 
         e2epipe.train()
-        e2epipe.save_models(epoch)
+        e2epipe.save_models(options, epoch)
 
 
 
@@ -367,4 +371,4 @@ if __name__ == '__main__':
     
 
 
-        
+       
