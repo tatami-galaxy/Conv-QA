@@ -320,7 +320,7 @@ if __name__ == '__main__':
 
             if idx % 500 == 0:
                 print('epoch {}, batch {}'.format(epoch, idx))
-
+ 
             idx += 1
 
             optim.zero_grad()
