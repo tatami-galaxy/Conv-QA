@@ -269,7 +269,7 @@ if __name__ == '__main__':
     # end to end model
     e2epipe = End2End(options)
     e2epipe.to(device) 
-    #e2epipe.load_weights(device)  # finetuned weights
+    e2epipe.load_weights(device)  # finetuned weights
     e2epipe.train()
 
     # tokenizer
