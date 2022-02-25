@@ -1,0 +1,275 @@
+import json
+from datasets import load_dataset, load_metric, load_from_disk
+import pandas as pd
+from transformers import T5Model, T5ForConditionalGeneration, T5Tokenizer
+from transformers import Adafactor
+import torch
+from torch import nn
+import numpy as np
+import torch.nn.functional as F
+from os.path import dirname, abspath
+from dataclasses import dataclass, field
+from collections import namedtuple
+from typing import List
+from utils import *
+#from torchviz import make_dot
+
+@dataclass
+class Options:  # class for storing hyperparameters and other options
+
+    max_length : int = 384  # use interim data if changed 
+    batch_size : int = 4
+    embed_dim : int = 768  # typical base model embedding dimension
+    pretrained_model_name : str = 't5-base'
+    act_vocab_size : int = 32100  # get from tokenizer
+    num_epochs : int = 3
+
+    # adafactor hyperparameters
+    lr : float = 1e-5
+    eps: tuple = (1e-30, 1e-3)
+    clip_threshold : float = 1.0
+    decay_rate : float = -0.8
+    beta1 : float = None
+    weight_decay : float = 0.0
+    relative_step : bool = False
+    scale_parameter : bool = False
+    warmup_init : bool = False
+
+    # gumbel softmax
+    tau : float = 1.0
+
+    # directories
+    root : str = field(init=False)
+    pretrained_model : str = field(init=False)
+    qr_finetuned : str = field(init=False)
+    rc_finetuned : str = field(init=False)
+    tokenizer : str = field(init=False)
+
+    # dataset
+    processed_dataset_dir : str = field(init=False)
+    processed_dataset_format : List = field(default_factory = lambda: ['ctx_input_ids', 'rwrt_input_ids', 'psg_input_ids',
+            'ans_input_ids', 'ctx_attention_mask', 'rwrt_attention_mask', 'psg_attention_mask'])
+
+    # add methods to init dataclass attributes here
+    def __post_init__(self):
+
+        self.root = self.get_root_dir()
+        self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
+        self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen4.pth'
+        self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen5.pth'
+        self.tokenizer = self.root + '/models/pretrained_models/t5-tokenizer'
+
+        self.processed_dataset_dir = self.root +'/data/processed/dataset/'
+        
+
+    def get_root_dir(self):
+        root = abspath(__file__)
+        while root.split('/')[-1] != 'conv-qa':
+            root = dirname(root)
+        return root
+
+         
+
+class End2End(nn.Module):
+
+    def __init__(self, options):  
+        super().__init__()        
+
+        # load T5 models
+        self.qr_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_model)
+        self.rc_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_model)
+
+
+
+    def load_weights(self, device):
+
+        # load finetuned weights
+        self.qr_model.load_state_dict(torch.load(options.qr_finetuned, map_location=device))
+        self.rc_model.load_state_dict(torch.load(options.rc_finetuned, map_location=device))  
+
+
+    def save_models(self, options, epoch):
+
+        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_s_qr'+str(epoch)+'.pth')
+        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_s_rc'+str(epoch)+'.pth')
+
+
+    
+    def forward(self, batch, options, device):
+
+        # context + question input
+        ctx_input = batch['ctx_input_ids'].to(device)  # QR input
+        ctx_attention = batch['ctx_attention_mask'].to(device)
+
+        # gold rewrite input for qr loss
+        rwrt_input = batch['rwrt_input_ids']
+        # tokens with indices set to -100 are ignored (masked)
+        rwrt_input[rwrt_input == tokenizer.pad_token_id] = -100
+        rwrt_input = rwrt_input.to(device)
+        rwrt_attention = batch['rwrt_attention_mask'].to(device) # b, 384
+
+        # passage input
+        psg_input = batch['psg_input_ids'].to(device)
+        # need to add sep token at the begining
+        # roll by 1 and add column of 1s
+        psg_input = torch.roll(psg_input, 1, 1)
+        psg_input[:, 0] = 1
+
+        # answer input
+        ans_input = batch['ans_input_ids']
+        # # tokens with indices set to -100 are ignored (masked)
+        ans_input[ans_input == tokenizer.pad_token_id] = -100
+        ans_input = ans_input.to(device)
+
+        # feed context+question input and rewrite label to qr model
+        qr_output = self.qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input, output_hidden_states=True)
+
+
+        # logits to be sampled from
+        logits = qr_output.logits
+
+        # qr loss
+        qr_loss = qr_output.loss
+
+        # gumbel softmax on the logits
+        # slice upto actual vocabulary size
+        gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
+
+        # print(gumbel_output.shape) # b, 384, 32100
+
+        
+
+        # normalized y cordinates for the grid
+        # we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
+        norm_ycord = torch.linspace(-1, 1, options.act_vocab_size).to(device) 
+      	# normalized x coordinates. we need the entire vector so we will use all the coordinates
+        norm_xcord = torch.linspace(-1, 1, options.embed_dim).to(device)
+
+        # T5 input embeddings
+        word_embeddings = self.rc_model.get_input_embeddings().weight[:options.act_vocab_size, :]  # 32100, 768
+
+        # embedding of <pad> token we need for masking. assuming the first embedding corresponds to the pad token
+        pad_embedding = word_embeddings[0] 
+
+        # reshape embeddings for input to grid_sample
+        embeddings = word_embeddings.view(1, 1, options.act_vocab_size, -1)  # 1, 1, 32100, 768
+        embeddings = embeddings.repeat(gumbel_output.shape[0], 1, 1, 1)  # b, 1, 32100, 768  repeating embeddigs batch number of times
+
+        # list to store the embeddings per max_length position
+        embedding_list = []
+
+        for i in range(options.max_length):
+            gumbeli = gumbel_output[:, i, :]  # ith token in the sequence 
+            gumbeli = gumbeli.view(gumbeli.shape[0], 1, -1)  # reshaping to make grid
+
+            # getting normalized y coord  # b, 1, 32100
+            gumbeli = torch.mul(gumbeli, norm_ycord)  # replaces the 1.0 with the normalized y coordinate
+            # non zero elements in each example of the batch. corresponds to the normalized id chosen by gumbel softmax
+            nonz_ids = torch.nonzero(gumbeli)[:, -1]
+            #print(nonz_ids)
+
+
+            # list to hold reshaped gumbeli containing the grid to extract embeddings
+            tensor_list = []
+            for j in range(len(nonz_ids)):  # zero grad somewhere in this loop
+                gumbeli[j, :, :] = gumbeli[j, :, nonz_ids[j]] # set all elements to the non zero elements
+                gumbeli_trunc = gumbeli[:, :, :options.embed_dim] # truncate to embed_dim
+
+                # cat the normalized x coordinates
+                tensorj = torch.cat((norm_xcord.view(1, options.embed_dim).T, gumbeli_trunc[j].T), dim = 1).view(1, options.embed_dim, 2)
+
+                tensor_list.append(tensorj)
+
+            gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
+            gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
+
+            token_embedding = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border', align_corners=False) # b, 1, 1, 768  zero gradient with nearest
+
+            token_embedding = token_embedding.view(token_embedding.shape[0], 1, -1)
+            embedding_list.append(token_embedding)
+        
+   
+        # concat embeddings for max_length positions for batch
+        inputs_embeds = torch.cat(embedding_list, dim=1)
+        return inputs_embeds
+
+    
+        # cast rewrite attention mask to float
+        rwrt_attention_f = rwrt_attention.float()  # b, 384
+    
+        # mask rc input (inputs_embeds) with attention mask
+        # masked positions are replaced with 0.0 vectors
+        mask = rwrt_attention_f.view(rwrt_attention_f.shape[0], -1, 1) @ (torch.ones(1, options.embed_dim)).to(device)  # reshape mask
+
+        #print(inputs_embeds)
+        inputs_embeds = torch.mul(inputs_embeds, mask)
+
+
+        #print(inputs_embeds)
+        #print(psg_input)
+        #print(inputs_embeds.shape)
+        #print(psg_input.shape)
+        #inputs_embeds[inputs_embeds.sum(dim=2)==0] = pad_embedding
+
+  
+        return inputs_embeds
+
+
+
+if __name__ == '__main__':
+
+    device = torch.device('cuda')
+
+    # hyperparameters and other options
+    options = Options()
+
+    # end to end model
+    e2epipe = End2End(options)
+    e2epipe.to(device) 
+    e2epipe.load_weights(device)  # finetuned weights
+    e2epipe.train()
+
+    # tokenizer
+    tokenizer = T5Tokenizer.from_pretrained(options.tokenizer)
+
+    # dataset
+
+    dataset = load_from_disk(options.processed_dataset_dir)
+    dataset.set_format(type='torch', columns = options.processed_dataset_format,)
+
+    # dataloaders
+    train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=options.batch_size)
+    test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=options.batch_size)
+
+    # decode rewrite
+    for batch in train_loader:
+
+        inputs_embeds = e2epipe(batch, options, device)[0]  
+        #print(inputs_embeds)
+        #print(inputs_embeds.shape)
+
+        word_embeddings = e2epipe.rc_model.get_input_embeddings().weight[:options.act_vocab_size, :]  # 32100, 768
+
+        print(inputs_embeds[0].shape)
+        print(word_embeddings[0].shape)
+        #print(inputs_embeds[0])
+        
+        for i in range(32100):
+            if torch.equal(word_embeddings[i], inputs_embeds[1]): print('equal')
+
+        break
+
+
+
+            
+
+ 
+
+
+
+
+
+    
+
+
+       
