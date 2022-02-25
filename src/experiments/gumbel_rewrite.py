@@ -18,7 +18,7 @@ from utils import *
 class Options:  # class for storing hyperparameters and other options
 
     max_length : int = 384  # use interim data if changed 
-    batch_size : int = 4
+    batch_size : int = 1
     embed_dim : int = 768  # typical base model embedding dimension
     pretrained_model_name : str = 't5-base'
     act_vocab_size : int = 32100  # get from tokenizer
@@ -183,7 +183,7 @@ class End2End(nn.Module):
             gumbeli = torch.cat(tensor_list, dim=0) # reshaped gumbeli with grid
             gumbeli = gumbeli.view(gumbeli.shape[0], 1, options.embed_dim, 2) # b, 1, 768, 2
 
-            token_embedding = F.grid_sample(embeddings, gumbeli, mode='nearest', padding_mode='border', align_corners=False) # b, 1, 1, 768  zero gradient with nearest
+            token_embedding = F.grid_sample(embeddings, gumbeli, mode='bilinear', padding_mode='border', align_corners=True) # b, 1, 1, 768  zero gradient with nearest
 
             token_embedding = token_embedding.view(token_embedding.shape[0], 1, -1)
             embedding_list.append(token_embedding)
@@ -255,7 +255,7 @@ if __name__ == '__main__':
         #print(inputs_embeds[0])
         
         for i in range(32100):
-            if torch.equal(word_embeddings[i], inputs_embeds[1]): print('equal')
+            if torch.equal(word_embeddings[i], inputs_embeds[0]): print('equal')
 
         break
 
