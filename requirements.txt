@@ -2,4 +2,3 @@ pytorch
 transformers
 sentencepiece
 datasets
-tqdm
