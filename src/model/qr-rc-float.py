@@ -155,7 +155,7 @@ class End2End(nn.Module):
         batch_list = []
         dummy = torch.ones(options.act_vocab_size).to(device)
 
-        for i in range(options.batch_size):
+        for i in range(gumbel_output.shape[0]):
 
             embedding_list = []
 
