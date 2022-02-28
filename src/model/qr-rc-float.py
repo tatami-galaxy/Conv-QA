@@ -340,6 +340,7 @@ if __name__ == '__main__':
 
         e2epipe.train()
         e2epipe.save_models(options, epoch)
+        print('Model saved')
 
 
 
