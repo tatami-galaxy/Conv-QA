@@ -55,8 +55,8 @@ class Options:  # class for storing hyperparameters and other options
 
         self.root = self.get_root_dir()
         self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
-        self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen2.pth'
-        self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen2.pth'
+        self.qr_finetuned = self.root + '/models/finetuned_weights/e2e_s_qr3.pth'
+        self.rc_finetuned = self.root + '/models/finetuned_weights/e2e_s_rc3.pth'
         self.tokenizer = self.root + '/models/pretrained_models/t5-tokenizer'
 
         self.processed_dataset_dir = self.root +'/data/processed/dataset/'
@@ -250,7 +250,7 @@ if __name__ == '__main__':
     # end to end model
     e2epipe = End2End(options)
     e2epipe.to(device) 
-    #e2epipe.load_weights(device)  # finetuned weights
+    e2epipe.load_weights(device)  # finetuned weights
     e2epipe.train()
 
     # tokenizer
@@ -339,7 +339,7 @@ if __name__ == '__main__':
         print('\n')
 
         e2epipe.train()
-        e2epipe.save_models(options, epoch)
+        e2epipe.save_models(options, epoch+3)
         print('Model saved')
 
 
