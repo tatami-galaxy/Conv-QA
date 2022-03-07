@@ -55,8 +55,8 @@ class Options:  # class for storing hyperparameters and other options
 
         self.root = self.get_root_dir()
         self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
-        self.qr_finetuned = self.root + '/models/finetuned_weights/e2e_s_qr6.pth'
-        self.rc_finetuned = self.root + '/models/finetuned_weights/e2e_s_rc6.pth'
+        self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen2.pth'
+        self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen2.pth'
         self.tokenizer = self.root + '/models/pretrained_models/t5-tokenizer'
 
         self.processed_dataset_dir = self.root +'/data/processed/dataset/'
@@ -90,8 +90,8 @@ class End2End(nn.Module):
 
     def save_models(self, options, epoch):
 
-        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_s_qr'+str(epoch)+'.pth')
-        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_s_rc'+str(epoch)+'.pth')
+        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_f2_qr'+str(epoch)+'.pth')
+        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_f2_rc'+str(epoch)+'.pth')
 
 
     
@@ -339,7 +339,7 @@ if __name__ == '__main__':
         print('\n')
 
         e2epipe.train()
-        e2epipe.save_models(options, epoch+6)
+        e2epipe.save_models(options, epoch)
         print('Model saved')
 
 
