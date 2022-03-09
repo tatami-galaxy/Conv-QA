@@ -56,7 +56,7 @@ class Options:  # class for storing hyperparameters and other options
         self.root = self.get_root_dir()
         self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
         self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen4.pth'
-        self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen5.pth'
+        self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen2.pth'
         self.tokenizer = self.root + '/models/pretrained_models/t5-tokenizer'
 
         self.processed_dataset_dir = self.root +'/data/processed/dataset/'
@@ -290,7 +290,7 @@ if __name__ == '__main__':
         qr_epoch_loss = 0
         rc_epoch_loss = 0
 
-        for batch in train_loader:
+        """for batch in train_loader:
 
             qr_loss, rc_loss = e2epipe(batch, options, device)  
 
@@ -314,7 +314,7 @@ if __name__ == '__main__':
 
             del qr_loss, rc_loss, total_loss
 
-        print('Train loss : {}, {}'.format(qr_epoch_loss/len(train_loader), rc_epoch_loss/len(train_loader)))
+        print('Train loss : {}, {}'.format(qr_epoch_loss/len(train_loader), rc_epoch_loss/len(train_loader)))"""
 
         e2epipe.eval()
 
@@ -335,6 +335,7 @@ if __name__ == '__main__':
             del qr_loss, rc_loss
 
         print('Valid loss : {}, {}'.format(qr_valid_loss/idx, rc_valid_loss/idx))
+        quit()
 
         print('\n')
 
