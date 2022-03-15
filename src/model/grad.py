@@ -90,8 +90,8 @@ class End2End(nn.Module):
 
     def save_models(self, options, epoch):
 
-        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_noqr2_qr'+str(epoch)+'.pth')
-        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_noqr2_rc'+str(epoch)+'.pth')
+        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_ff_qr'+str(epoch)+'.pth')
+        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_ff_rc'+str(epoch)+'.pth')
 
 
     
@@ -137,12 +137,12 @@ class End2End(nn.Module):
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
 
         # print(gumbel_output.shape) # b, 384, 32100
+        """dummy = torch.arange(32100)
+        gumbel_long = gumbel_output.long().cpu()
+        outputs = gumbel_long@dummy
+        outputs = torch.mul(outputs,(rwrt_attention.cpu()))
+        print(tokenizer.batch_decode(outputs, skip_special_tokens=True))"""
 
-        # normalized y cordinates for the grid
-        # we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
-        norm_ycord = torch.linspace(-1, 1, options.act_vocab_size).to(device) 
-      	# normalized x coordinates. we need the entire vector so we will use all the coordinates
-        norm_xcord = torch.linspace(-1, 1, options.embed_dim).to(device)
 
         # T5 input embeddings
         word_embeddings = self.rc_model.get_input_embeddings().weight[:options.act_vocab_size, :]  # 32100, 768
@@ -208,7 +208,6 @@ class End2End(nn.Module):
 
         #print(trunc_psg)
         #print(trunc_psg.shape)
-
         # reshape and repeat values for changing into embeddings afterwards
         trunc_psg = trunc_psg.view(trunc_psg.shape[0], -1, 1)
         trunc_psg = trunc_psg.repeat(1, 1, options.embed_dim)
@@ -233,8 +232,24 @@ class End2End(nn.Module):
 
         # add inputs_embeds and masked passage embeddings
         inputs_embeds = torch.add(inputs_embeds, trunc_psg)
+        inputs_embeds.retain_grad()
+        #print(inputs_embeds.shape) # b, 384, 768
+        """tokens = []
+        for i in range(10):
+            print(i)
+            em = inputs_embeds[0][i]
+            for j in range(32100):
+                if torch.equal(word_embeddings[j], em): tokens.append(j)
+
+        print(tokenizer.decode(tokens, skip_special_tokens=True))
+        quit()"""
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
+
+        rc_loss.backward()
+        print(inputs_embeds.grad)
+        print(inputs_embeds.grad.shape)
+        quit()
 
         return qr_loss, rc_loss
 
@@ -305,8 +320,7 @@ if __name__ == '__main__':
             idx += 1
 
             optim.zero_grad()
-            #total_loss.backward()
-            rc_loss.backward()
+            total_loss.backward()
 
             #for name, param in e2epipe.qr_model.named_parameters():
                 #if param.requires_grad: print(name, param.grad)
