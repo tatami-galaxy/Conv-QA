@@ -140,9 +140,9 @@ class End2End(nn.Module):
 
         # normalized y cordinates for the grid
         # we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
-        norm_ycord = torch.linspace(-1, 1, options.act_vocab_size).to(device) 
+        #norm_ycord = torch.linspace(-1, 1, options.act_vocab_size).to(device) 
       	# normalized x coordinates. we need the entire vector so we will use all the coordinates
-        norm_xcord = torch.linspace(-1, 1, options.embed_dim).to(device)
+        #norm_xcord = torch.linspace(-1, 1, options.embed_dim).to(device)
 
         # T5 input embeddings
         word_embeddings = self.rc_model.get_input_embeddings().weight[:options.act_vocab_size, :]  # 32100, 768
