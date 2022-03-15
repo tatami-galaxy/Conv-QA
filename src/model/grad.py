@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from collections import namedtuple
 from typing import List
 from utils import *
+import math
 #from torchviz import make_dot
 
 @dataclass
@@ -137,11 +138,12 @@ class End2End(nn.Module):
         gumbel_output = F.gumbel_softmax(logits, tau=options.tau, hard=True)[..., :options.act_vocab_size]
 
         # print(gumbel_output.shape) # b, 384, 32100
-        """dummy = torch.arange(32100)
+        dummy = torch.arange(32100)
         gumbel_long = gumbel_output.long().cpu()
         outputs = gumbel_long@dummy
         outputs = torch.mul(outputs,(rwrt_attention.cpu()))
-        print(tokenizer.batch_decode(outputs, skip_special_tokens=True))"""
+        print(tokenizer.batch_decode(outputs, skip_special_tokens=True))
+        ###quit()
 
 
         # T5 input embeddings
@@ -234,21 +236,46 @@ class End2End(nn.Module):
         inputs_embeds = torch.add(inputs_embeds, trunc_psg)
         inputs_embeds.retain_grad()
         #print(inputs_embeds.shape) # b, 384, 768
-        """tokens = []
-        for i in range(10):
-            print(i)
-            em = inputs_embeds[0][i]
+        tokens = []
+        for i in range(20):
+            #print(i)
+            em = inputs_embeds[3][i]
             for j in range(32100):
                 if torch.equal(word_embeddings[j], em): tokens.append(j)
 
         print(tokenizer.decode(tokens, skip_special_tokens=True))
-        quit()"""
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
         rc_loss.backward()
-        print(inputs_embeds.grad)
-        print(inputs_embeds.grad.shape)
+        #print(inputs_embeds.grad)
+        #print(inputs_embeds.grad.shape) # b, 384, 768
+        rr = inputs_embeds[3,:20,:]
+        #print(rr[0].shape)
+        rr_grad = inputs_embeds.grad[3, :20, :]
+       
+        #print(rr) 
+        rr = rr - 10000000*rr_grad
+        #print(rr.shape)
+        #print(rr)
+
+        cos = nn.CosineSimilarity(dim=0)
+
+        tokens = []
+        for i in range(20):
+
+            sim = 0
+            idx = 0
+
+            for j in range(32100):
+                s = cos(rr[i], word_embeddings[j])
+                if s > sim:
+                    sim = s
+                    idx = j
+
+            tokens.append(idx)
+                
+        print(tokenizer.decode(tokens, skip_special_tokens=True))
         quit()
 
         return qr_loss, rc_loss
@@ -257,7 +284,7 @@ class End2End(nn.Module):
 
 if __name__ == '__main__':
 
-    device = torch.device('cuda')
+    device = torch.device('cpu')
 
     # hyperparameters and other options
     options = Options()
