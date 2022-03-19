@@ -20,6 +20,7 @@ class Options:  # class for storing hyperparameters and other options
     max_length : int = 384  # use interim data if changed 
     batch_size : int = 4
     embed_dim : int = 768  # typical base model embedding dimension
+    pretrained_qr_model : str = 't5-large'
     pretrained_model_name : str = 't5-base'
     act_vocab_size : int = 32100  # get from tokenizer
     num_epochs : int = 3
@@ -55,7 +56,7 @@ class Options:  # class for storing hyperparameters and other options
 
         self.root = self.get_root_dir()
         self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
-        self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen4.pth'
+        self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen_large3.pth'
         self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen2.pth'
         self.tokenizer = self.root + '/models/pretrained_models/t5-tokenizer'
 
@@ -76,7 +77,7 @@ class End2End(nn.Module):
         super().__init__()        
 
         # load T5 models
-        self.qr_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_model)
+        self.qr_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_qr_model)
         self.rc_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_model)
 
 
@@ -90,8 +91,8 @@ class End2End(nn.Module):
 
     def save_models(self, options, epoch):
 
-        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_noqr2_qr'+str(epoch)+'.pth')
-        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_noqr2_rc'+str(epoch)+'.pth')
+        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_large_qr'+str(epoch)+'.pth')
+        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_large_rc'+str(epoch)+'.pth')
 
 
     
