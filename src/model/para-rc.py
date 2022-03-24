@@ -23,7 +23,7 @@ class Options:  # class for storing hyperparameters and other options
     pretrained_qr_model : str = 't5-large'
     pretrained_model_name : str = 't5-base'
     act_vocab_size : int = 32100  # get from tokenizer
-    num_epochs : int = 5
+    num_epochs : int = 3
 
     # adafactor hyperparameters
     lr : float = 1e-5
