@@ -2,6 +2,7 @@ import json
 from datasets import load_dataset, load_metric, load_from_disk
 import pandas as pd
 from transformers import T5Model, T5ForConditionalGeneration, T5Tokenizer
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from transformers import Adafactor
 import torch
 from torch import nn
@@ -17,11 +18,12 @@ from utils import *
 @dataclass
 class Options:  # class for storing hyperparameters and other options
 
+    # model hyperparameters
     max_length : int = 384  # use interim data if changed 
-    batch_size : int = 4
+    batch_size : int = 8
     embed_dim : int = 768  # typical base model embedding dimension
-    pretrained_qr_model : str = 't5-large'
-    pretrained_model_name : str = 't5-base'
+    pretrained_t5_model_name : str = 't5-base'
+    pretrained_para_model_name : str = 't5-base'
     act_vocab_size : int = 32100  # get from tokenizer
     num_epochs : int = 3
 
@@ -39,28 +41,55 @@ class Options:  # class for storing hyperparameters and other options
     # gumbel softmax
     tau : float = 1.0
 
+    # tokenizers
+    t5_tokenizer : any = field(init=False)
+    para_tokenizer : any = field(init=False)
+
+    # directory names
+    pretrained_t5_model_dir = '/models/pretrained_models/t5-base'
+    pretrained_para_model_dir = '/models/pretrained_models/t5-base'
+    rc_finetuned_dir = '/models/finetuned_weights/new_rc_gen5.pth'
+    para_finetuned_dir = '/models/finetuned_weights/para_3.pth'
+    t5_tokenizer_dir_name = '/models/pretrained_models/t5-tokenizer'
+    processed_dataset_dir_name = '/data/processed/dataset/'
+    interim_dataset_dir_name = '/data/interim/'
+
     # directories
     root : str = field(init=False)
-    pretrained_model : str = field(init=False)
-    qr_finetuned : str = field(init=False)
+    pretrained_t5_model : str = field(init=False)
     rc_finetuned : str = field(init=False)
-    tokenizer : str = field(init=False)
+    para_finetuned : str = field(init=False)
+    t5_tokenizer_dir : str = field(init=False)
 
     # dataset
     processed_dataset_dir : str = field(init=False)
+    interim_dataset_dir : str = field(init=False)
     processed_dataset_format : List = field(default_factory = lambda: ['ctx_input_ids', 'rwrt_input_ids', 'psg_input_ids',
             'ans_input_ids', 'ctx_attention_mask', 'rwrt_attention_mask', 'psg_attention_mask'])
+
 
     # add methods to init dataclass attributes here
     def __post_init__(self):
 
+        # root
         self.root = self.get_root_dir()
-        self.pretrained_model = self.root + '/models/pretrained_models/t5-base'
-        self.qr_finetuned = self.root + '/models/finetuned_weights/qr_gen_large3.pth'
-        self.rc_finetuned = self.root + '/models/finetuned_weights/rc_gen2.pth'
-        self.tokenizer = self.root + '/models/pretrained_models/t5-tokenizer'
 
-        self.processed_dataset_dir = self.root +'/data/processed/dataset/'
+        # models
+        self.pretrained_t5_model = self.root + self.pretrained_t5_model_dir
+
+        # finetuned weights
+        self.rc_finetuned = self.root + self.rc_finetuned_dir
+        self.para_finetuned = self.root + self.para_finetuned_dir
+
+        # tokenizers
+        self.t5_tokenizer_dir = self.root + self.t5_tokenizer_dir_name
+        self.t5_tokenizer = T5Tokenizer.from_pretrained(self.t5_tokenizer_dir)
+
+        # datasets
+        self.processed_dataset_dir = self.root + self.processed_dataset_dir_name
+        self.interim_dataset_dir = self.root + self.interim_dataset_dir_name
+        
+
         
 
     def get_root_dir(self):
@@ -76,37 +105,34 @@ class End2End(nn.Module):
     def __init__(self, options):  
         super().__init__()        
 
-        # load T5 models
-        self.qr_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_qr_model)
-        self.rc_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_model)
+        # load models
+        self.rc_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_t5_model)
+        self.para_model = T5ForConditionalGeneration.from_pretrained(options.pretrained_t5_model)
 
 
 
     def load_weights(self, device):
 
         # load finetuned weights
-        self.qr_model.load_state_dict(torch.load(options.qr_finetuned, map_location=device))
         self.rc_model.load_state_dict(torch.load(options.rc_finetuned, map_location=device))  
+        self.para_model.load_state_dict(torch.load(options.rc_finetuned, map_location=device))  
 
 
     def save_models(self, options, epoch):
 
-        torch.save(self.qr_model.state_dict(), options.root+'/models/finetuned_weights/e2e_large_qr'+str(epoch)+'.pth')
-        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_large_rc'+str(epoch)+'.pth')
-
+        torch.save(self.rc_model.state_dict(), options.root+'/models/finetuned_weights/e2e_para_rc'+str(epoch)+'.pth')
+        torch.save(self.para_model.state_dict(), options.root+'/models/finetuned_weights/e2e_para'+str(epoch)+'.pth')
 
     
     def forward(self, batch, options, device):
 
-        # context + question input
-        ctx_input = batch['ctx_input_ids'].to(device)  # QR input
-        ctx_attention = batch['ctx_attention_mask'].to(device)
-
-        # gold rewrite input for qr loss
+        # gold rewrite 
         rwrt_input = batch['rwrt_input_ids']
-        # tokens with indices set to -100 are ignored (masked)
-        rwrt_input[rwrt_input == tokenizer.pad_token_id] = -100
         rwrt_input = rwrt_input.to(device)
+        rwrt_label = batch['rwrt_input_ids']
+        # tokens with indices set to -100 are ignored (masked)
+        rwrt_label[rwrt_label == options.t5_tokenizer.pad_token_id] = -100
+        rwrt_label = rwrt_label.to(device)
         rwrt_attention = batch['rwrt_attention_mask'].to(device) # b, 384
 
         # passage input
@@ -119,19 +145,16 @@ class End2End(nn.Module):
         # answer input
         ans_input = batch['ans_input_ids']
         # # tokens with indices set to -100 are ignored (masked)
-        ans_input[ans_input == tokenizer.pad_token_id] = -100
+        ans_input[ans_input == options.t5_tokenizer.pad_token_id] = -100
         ans_input = ans_input.to(device)
 
-        # feed context+question input and rewrite label to qr model
-        qr_output = self.qr_model(input_ids=ctx_input, attention_mask=ctx_attention, labels=rwrt_input, output_hidden_states=True)
+        # feed rewrite to para model
+        para_output = self.para_model(input_ids=rwrt_input, attention_mask=rwrt_attention, labels=rwrt_label, output_hidden_states=True)  # max length 256
 
 
         # logits to be sampled from
-        logits = qr_output.logits
+        logits = para_output.logits
         #logits.retain_grad()
-
-        # qr loss
-        qr_loss = qr_output.loss
 
         # gumbel softmax on the logits
         # slice upto actual vocabulary size
@@ -142,7 +165,7 @@ class End2End(nn.Module):
         # normalized y cordinates for the grid
         # we need to select the coordinate corresponding to the vector in the vocab as output by gumbel softmax
         #norm_ycord = torch.linspace(-1, 1, options.act_vocab_size).to(device) 
-      	# normalized x coordinates. we need the entire vector so we will use all the coordinates
+        # normalized x coordinates. we need the entire vector so we will use all the coordinates
         #norm_xcord = torch.linspace(-1, 1, options.embed_dim).to(device)
 
         # T5 input embeddings
@@ -237,25 +260,93 @@ class End2End(nn.Module):
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
-        return qr_loss, rc_loss
+        return rc_loss
+
+
+class DataClass:
+
+    def __init__(self, data_dir):
+        self.data_dir = data_dir
+
+    def data_csv(self, f, output):
+
+        answers = []
+        rewrites = []
+        passages = []
+
+        filepath = self.data_dir+f
+
+        with open(filepath) as fl:
+            data = json.load(fl)
+      
+        for d in data:
+            answers.append(d['answer'])
+            rewrites.append(d['rewrite'])
+            passages.append(d['passage'])
+
+        data = {'answer':answers, 'passage':passages, 'rewrite':rewrites}
+        df = pd.DataFrame(data)
+        df.to_csv(output, index=False)
+
+
+
+def tokenize_dataset(batch, options):
+
+    passages = options.para_tokenizer(batch['passage'], padding='max_length',
+        truncation=True, max_length=options.max_length, add_special_tokens=True)
+
+    rewrites = options.para_tokenizer(batch['rewrite'], padding='max_length',
+        truncation=True, max_length=options.max_length, add_special_tokens=True)
+
+    answers = options.para_tokenizer(batch['answer'], padding='max_length',
+        truncation=True, max_length=options.max_length, add_special_tokens=True)
+
+    batch['psg_input_ids'] = passages.input_ids
+    batch['rwrt_input_ids'] = rewrites.input_ids
+    batch['ans_input_ids']  = answers.input_ids
+    batch['psg_attention_mask'] = passages.attention_mask
+    batch['rwrt_attention_mask'] = rewrites.attention_mask
+
+    return batch
+
+
+# handle examples with no answers
+def no_ans(x):
+    if isinstance(x['answer'], str): return x
+    x['answer'] = 'no_ans'
+    return x
 
 
 
 if __name__ == '__main__':
 
-    device = torch.device('cuda')
+    device = torch.device('cpu')
 
     # hyperparameters and other options
     options = Options()
 
+    # process interim dataset
+    data = DataClass(options.interim_dataset_dir)
+    data.data_csv('qrecc_train.json', 'train.csv')
+    data.data_csv('qrecc_test.json', 'test.csv')
+    qrecc = load_dataset('csv', data_files={'train': 'train.csv', 'test': 'test.csv'})
+
+    # no answers
+    qrecc = qrecc.map(no_ans)
+
+    # tokenizing
+    dataset = qrecc.map(tokenize_dataset, fn_kwargs={'options': options}, batch_size = options.batch_size,
+        batched=True, remove_columns=['passage', 'answer', 'rewrite'])
+
+    dataset.set_format(
+        type='torch', columns=['rwrt_input_ids', 'psg_input_ids', 'ans_input_ids', 'psg_attention_mask', 'rwrt_attention_mask'],)
+
+
     # end to end model
     e2epipe = End2End(options)
     e2epipe.to(device) 
-    e2epipe.load_weights(device)  # finetuned weights
+    #e2epipe.load_weights(device)  # finetuned weights
     e2epipe.train()
-
-    # tokenizer
-    tokenizer = T5Tokenizer.from_pretrained(options.tokenizer)
 
     # optimizer
     optim = Adafactor(
@@ -270,11 +361,6 @@ if __name__ == '__main__':
             scale_parameter = options.scale_parameter,
             warmup_init = options.warmup_init)
 
-    # dataset
-
-    dataset = load_from_disk(options.processed_dataset_dir)
-    dataset.set_format(type='torch', columns = options.processed_dataset_format,)
-
     # dataloaders
     train_loader = torch.utils.data.DataLoader(dataset['train'], batch_size=options.batch_size)
     test_loader = torch.utils.data.DataLoader(dataset['test'], batch_size=options.batch_size)
@@ -288,17 +374,14 @@ if __name__ == '__main__':
 
         idx = 1
 
-        qr_epoch_loss = 0
         rc_epoch_loss = 0
 
         for batch in train_loader:
 
-            qr_loss, rc_loss = e2epipe(batch, options, device)  
+            rc_loss = e2epipe(batch, options, device)  
 
-            qr_epoch_loss += qr_loss.item()
             rc_epoch_loss += rc_loss.item()
 
-            total_loss = sum([qr_loss, rc_loss])
 
             if idx % 500 == 0:
                 print('epoch {}, batch {}'.format(epoch, idx))
@@ -306,43 +389,38 @@ if __name__ == '__main__':
             idx += 1
 
             optim.zero_grad()
-            total_loss.backward()
-            #rc_loss.backward()
+            rc_loss.backward()
 
             #for name, param in e2epipe.qr_model.named_parameters():
                 #if param.requires_grad: print(name, param.grad)
 
             optim.step()
 
-            del qr_loss, rc_loss, total_loss
 
-        print('Train loss : {}, {}'.format(qr_epoch_loss/len(train_loader), rc_epoch_loss/len(train_loader)))
+        print('Train loss : {}'.format(rc_epoch_loss/len(train_loader)))
 
         e2epipe.eval()
 
         # valid loop
-        qr_valid_loss = 0
         rc_valid_loss = 0
 
         idx = 0
 
         for batch in test_loader:
 
-            qr_loss, rc_loss = e2epipe(batch, options, device)
-            qr_valid_loss += qr_loss.item()
+            rc_loss = e2epipe(batch, options, device)
             rc_valid_loss += rc_loss.item()
 
             idx += 1
 
-            del qr_loss, rc_loss
 
-        print('Valid loss : {}, {}'.format(qr_valid_loss/idx, rc_valid_loss/idx))
+        print('Valid loss : {}'.format(rc_valid_loss/idx))
 
         print('\n')
 
         e2epipe.train()
-        e2epipe.save_models(options, epoch)
-        print('Model saved')
+        #e2epipe.save_models(options, epoch)
+        #print('Model saved')
 
 
 
