@@ -49,7 +49,7 @@ class Options:  # class for storing hyperparameters and other options
     pretrained_t5_model_dir = '/models/pretrained_models/t5-base'
     pretrained_para_model_dir = '/models/pretrained_models/t5-base'
     rc_finetuned_dir = '/models/finetuned_weights/new_rc_gen5.pth'
-    para_finetuned_dir = '/models/finetuned_weights/para_3.pth'
+    para_finetuned_dir = '/models/finetuned_weights/para_5.pth'
     t5_tokenizer_dir_name = '/models/pretrained_models/t5-tokenizer'
     processed_dataset_dir_name = '/data/processed/dataset/'
     interim_dataset_dir_name = '/data/interim/'
@@ -301,11 +301,16 @@ def tokenize_dataset(batch, options):
     answers = options.para_tokenizer(batch['answer'], padding='max_length',
         truncation=True, max_length=options.max_length, add_special_tokens=True)
 
+    labels = options.tokenizer(batch['label'], padding='max_length', truncation=True,
+            max_length=options.max_length, add_special_tokens=True)
+
     batch['psg_input_ids'] = passages.input_ids
     batch['rwrt_input_ids'] = rewrites.input_ids
     batch['ans_input_ids']  = answers.input_ids
+    batch['lbl_input_ids']  = labels.input_ids
     batch['psg_attention_mask'] = passages.attention_mask
     batch['rwrt_attention_mask'] = rewrites.attention_mask
+    batch['lbl_attention_mask'] = labels.attention_mask
 
     return batch
 
@@ -325,21 +330,19 @@ if __name__ == '__main__':
     # hyperparameters and other options
     options = Options()
 
-    # process interim dataset
-    data = DataClass(options.interim_dataset_dir)
-    data.data_csv('qrecc_train.json', 'train.csv')
-    data.data_csv('qrecc_test.json', 'test.csv')
-    qrecc = load_dataset('csv', data_files={'train': 'train.csv', 'test': 'test.csv'})
+    # load dataset
+    qrecc = load_from_disk()##
 
     # no answers
     qrecc = qrecc.map(no_ans)
 
     # tokenizing
     dataset = qrecc.map(tokenize_dataset, fn_kwargs={'options': options}, batch_size = options.batch_size,
-        batched=True, remove_columns=['passage', 'answer', 'rewrite'])
+        batched=True, remove_columns=['passage', 'answer', 'rewrite', 'label'])
 
     dataset.set_format(
-        type='torch', columns=['rwrt_input_ids', 'psg_input_ids', 'ans_input_ids', 'psg_attention_mask', 'rwrt_attention_mask'],)
+        type='torch', columns=['rwrt_input_ids', 'psg_input_ids', 'ans_input_ids', 'psg_attention_mask', 'rwrt_attention_mask',
+            'lbl_input_ids', 'lbl_attention_mask'],)
 
 
     # end to end model
