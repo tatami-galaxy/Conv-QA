@@ -129,7 +129,7 @@ class End2End(nn.Module):
         # gold rewrite 
         rwrt_input = batch['rwrt_input_ids']
         rwrt_input = rwrt_input.to(device)
-        rwrt_label = batch['rwrt_input_ids']
+        rwrt_label = batch['lbl_input_ids']
         # tokens with indices set to -100 are ignored (masked)
         rwrt_label[rwrt_label == options.t5_tokenizer.pad_token_id] = -100
         rwrt_label = rwrt_label.to(device)
@@ -149,8 +149,9 @@ class End2End(nn.Module):
         ans_input = ans_input.to(device)
 
         # feed rewrite to para model
-        para_output = self.para_model(input_ids=rwrt_input, attention_mask=rwrt_attention, labels=rwrt_label, output_hidden_states=True)  # max length 256
+        para_output = self.para_model(input_ids=rwrt_input, attention_mask=rwrt_attention, labels=rwrt_label, output_hidden_states=True)  
 
+        para_loss = para_output.loss
 
         # logits to be sampled from
         logits = para_output.logits
@@ -260,48 +261,22 @@ class End2End(nn.Module):
 
         rc_loss = self.rc_model(inputs_embeds=inputs_embeds, labels=ans_input).loss
 
-        return rc_loss
-
-
-class DataClass:
-
-    def __init__(self, data_dir):
-        self.data_dir = data_dir
-
-    def data_csv(self, f, output):
-
-        answers = []
-        rewrites = []
-        passages = []
-
-        filepath = self.data_dir+f
-
-        with open(filepath) as fl:
-            data = json.load(fl)
-      
-        for d in data:
-            answers.append(d['answer'])
-            rewrites.append(d['rewrite'])
-            passages.append(d['passage'])
-
-        data = {'answer':answers, 'passage':passages, 'rewrite':rewrites}
-        df = pd.DataFrame(data)
-        df.to_csv(output, index=False)
+        return para_loss, rc_loss
 
 
 
 def tokenize_dataset(batch, options):
 
-    passages = options.para_tokenizer(batch['passage'], padding='max_length',
+    passages = options.t5_tokenizer(batch['passage'], padding='max_length',
         truncation=True, max_length=options.max_length, add_special_tokens=True)
 
-    rewrites = options.para_tokenizer(batch['rewrite'], padding='max_length',
+    rewrites = options.t5_tokenizer(batch['rewrite'], padding='max_length',
         truncation=True, max_length=options.max_length, add_special_tokens=True)
 
-    answers = options.para_tokenizer(batch['answer'], padding='max_length',
+    answers = options.t5_tokenizer(batch['answer'], padding='max_length',
         truncation=True, max_length=options.max_length, add_special_tokens=True)
 
-    labels = options.tokenizer(batch['label'], padding='max_length', truncation=True,
+    labels = options.t5_tokenizer(batch['labels'], padding='max_length', truncation=True,
             max_length=options.max_length, add_special_tokens=True)
 
     batch['psg_input_ids'] = passages.input_ids
@@ -325,20 +300,20 @@ def no_ans(x):
 
 if __name__ == '__main__':
 
-    device = torch.device('cpu')
+    device = torch.device('cuda')
 
     # hyperparameters and other options
     options = Options()
 
     # load dataset
-    qrecc = load_from_disk()##
+    qrecc = load_from_disk('/home/ujan/Desktop/qrecc_para')
 
     # no answers
     qrecc = qrecc.map(no_ans)
 
     # tokenizing
     dataset = qrecc.map(tokenize_dataset, fn_kwargs={'options': options}, batch_size = options.batch_size,
-        batched=True, remove_columns=['passage', 'answer', 'rewrite', 'label'])
+        batched=True, remove_columns=['passage', 'answer', 'rewrite', 'labels'])
 
     dataset.set_format(
         type='torch', columns=['rwrt_input_ids', 'psg_input_ids', 'ans_input_ids', 'psg_attention_mask', 'rwrt_attention_mask',
@@ -348,7 +323,7 @@ if __name__ == '__main__':
     # end to end model
     e2epipe = End2End(options)
     e2epipe.to(device) 
-    #e2epipe.load_weights(device)  # finetuned weights
+    e2epipe.load_weights(device)  # finetuned weights
     e2epipe.train()
 
     # optimizer
@@ -378,11 +353,15 @@ if __name__ == '__main__':
         idx = 1
 
         rc_epoch_loss = 0
+        para_epoch_loss = 0
 
         for batch in train_loader:
 
-            rc_loss = e2epipe(batch, options, device)  
+            para_loss, rc_loss = e2epipe(batch, options, device)  
 
+            total_loss = sum([para_loss, rc_loss])
+
+            para_epoch_loss += para_loss.item()
             rc_epoch_loss += rc_loss.item()
 
 
@@ -392,7 +371,7 @@ if __name__ == '__main__':
             idx += 1
 
             optim.zero_grad()
-            rc_loss.backward()
+            total_loss.backward()
 
             #for name, param in e2epipe.qr_model.named_parameters():
                 #if param.requires_grad: print(name, param.grad)
@@ -400,30 +379,34 @@ if __name__ == '__main__':
             optim.step()
 
 
-        print('Train loss : {}'.format(rc_epoch_loss/len(train_loader)))
+        print('Train loss : {}, {}'.format(rc_epoch_loss/len(train_loader), para_epoch_loss/len(train_loader)))
 
         e2epipe.eval()
 
         # valid loop
         rc_valid_loss = 0
+        para_valid_loss = 0
 
         idx = 0
 
         for batch in test_loader:
 
-            rc_loss = e2epipe(batch, options, device)
+            para_loss, rc_loss = e2epipe(batch, options, device)
+            para_valid_loss += para_loss.item()
             rc_valid_loss += rc_loss.item()
 
             idx += 1
 
 
-        print('Valid loss : {}'.format(rc_valid_loss/idx))
+        print('Valid loss : {}, {}'.format(rc_valid_loss/idx, para_valid_loss/idx))
 
         print('\n')
 
         e2epipe.train()
-        #e2epipe.save_models(options, epoch)
-        #print('Model saved')
+        e2epipe.save_models(options, epoch)
+        print('Model saved')
+
+        options.tau -= 0.2
 
 
 
