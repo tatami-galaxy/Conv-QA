@@ -20,6 +20,7 @@ import nltk
 import time
 from functools import partial
 
+# hyperparameters
 max_length = 256  # can also have different max_length for train, eval, generate
 num_beams = 1  # 1 -> no beam search
 per_device_train_batch_size = 16
@@ -34,22 +35,13 @@ adam_epsilon = 1e-8
 weight_decay = 0.0
 label_smoothing_factor = 0.0
 
+# directories
+output_dir = '/users/ujan/conv-qa/models/qr/'
+data_dir = '/users/ujan/conv-qa/data/interim/qrecc/'
 
-output_dir = './model'
+# models
 model_name = 't5-base'
 
-
-tokenizer = T5Tokenizer.from_pretrained(model_name, model_max_length=max_length)
-
-# class FlaxT5ForConditionalGeneration(FlaxT5PreTrainedModel): 
-# module_class = FlaxT5ForConditionalGenerationModule
-
-# class FlaxT5ForConditionalGenerationModule(nn.Module): __call__()
-
-# class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
-# module_class: nn.Module = None -> gets set to FlaxT5ForConditionalGenerationModule
-
-model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
 
 # data loader
 def data_loader(rng: jax.random.PRNGKey, dataset: Dataset, batch_size: int, shuffle: bool = False, drop_last=True):
@@ -119,22 +111,6 @@ def tokenize_dataset(batch):
     return model_inputs
 
 
-qrecc = load_from_disk('/content/drive/MyDrive/qrecc')
-print(qrecc)
-
-# removing examples with no context
-qrecc = qrecc.filter(lambda x: isinstance(x['context'], str) and isinstance(x['rewrite'], str))
-
-dataset = qrecc.map(
-    tokenize_dataset,
-    batched=True,
-    remove_columns=qrecc['train'].column_names,
-    desc="Tokenizing dataset",)
-
-print(dataset)
-
-metric = evaluate.load("rouge")
-nltk.download('punkt')
 
 def postprocess_text(preds, labels):
     preds = [pred.strip() for pred in preds]
@@ -160,29 +136,6 @@ def compute_metrics(preds, labels):
     result["gen_len"] = np.mean(prediction_lens)
     return result
 
-# initialize our training
-# JAX’s random functions produce pseudorandom numbers from the PRNG state, but do not change the state
-# reusing the same state will cause sadness and monotony, depriving the end user of lifegiving chaos
-# instead, we split the PRNG to get usable subkeys every time we need a new pseudorandom number
-# old key -> new key, new subkey
-# we propagate the key and make new subkeys whenever we need a new random number
-# print("old key", key)
-# key, subkey = random.split(key)
-# normal_pseudorandom = random.normal(subkey, shape=(1,))
-# print("    \---SPLIT --> new key   ", key)
-# print("             \--> new subkey", subkey, "--> normal", normal_pseudorandom)
-
-rng = jax.random.PRNGKey(seed)
-rng, dropout_rng = jax.random.split(rng)
-
-# Store some constants
-num_epochs = int(num_train_epochs)
-train_batch_size = int(per_device_train_batch_size) 
-per_device_eval_batch_size = int(per_device_eval_batch_size)
-eval_batch_size = per_device_eval_batch_size * jax.device_count()
-steps_per_epoch = len(dataset['train']) // train_batch_size
-total_train_steps = steps_per_epoch * num_epochs
-
 
 # learning rate function
 def create_learning_rate_fn(
@@ -197,15 +150,6 @@ def create_learning_rate_fn(
     )
     schedule_fn = optax.join_schedules(schedules=[warmup_fn, decay_fn], boundaries=[num_warmup_steps])
     return schedule_fn
-
-
-# Create learning rate schedule
-linear_decay_lr_schedule_fn = create_learning_rate_fn(
-    len(dataset['train']),
-    train_batch_size,
-    num_train_epochs,
-    warmup_steps,
-    learning_rate,)
 
 
 # we use Optax's "masking" functionality to not apply weight decay
@@ -257,14 +201,6 @@ def decay_mask_fn(params):
 
     return traverse_util.unflatten_dict(flat_mask)
 
-# create adam optimizer
-adamw = optax.adamw(
-    learning_rate=linear_decay_lr_schedule_fn,
-    b1=adam_beta1,
-    b2=adam_beta2,
-    eps=adam_epsilon,
-    weight_decay=weight_decay,
-    mask=decay_mask_fn,) # mask*
 
 # setup train state
 
@@ -276,9 +212,6 @@ class TrainState(train_state.TrainState):
             dropout_rng=shard_prng_key(self.dropout_rng))
 
 
-state = TrainState.create(
-    apply_fn=model.__call__, params=model.params,
-    tx=adamw, dropout_rng=dropout_rng)
 
 # label smoothed cross entropy
 def loss_fn(logits, labels, padding_mask, label_smoothing_factor=0.0):
@@ -359,8 +292,6 @@ def eval_step(params, batch, label_smoothing_factor=0.0):
     return metrics
 
 
- # define generation function
-gen_kwargs = {"max_length": max_length, "num_beams": num_beams}
 
 def generate_step(params, batch):
     model.params = params
@@ -368,89 +299,168 @@ def generate_step(params, batch):
     return output_ids.sequences
 
 
-# create parallel version of the train and eval step
-p_train_step = jax.pmap(partial(train_step,
-                                label_smoothing_factor=label_smoothing_factor),
-                        "batch", donate_argnums=(0,))
-p_eval_step = jax.pmap(partial(eval_step,
-                               label_smoothing_factor=label_smoothing_factor), "batch")
-p_generate_step = jax.pmap(generate_step, "batch")
 
-# replicate the train state on each device
-state = state.replicate()
 
-train_time = 0
-epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
-for epoch in epochs:
-    ### training ###
-    train_start = time.time()
+if __name__ == '__main__':
+    
+    # tokenizer and model
 
-    # create sampling rng
-    rng, input_rng = jax.random.split(rng)
-    train_metrics = []
+    tokenizer = T5Tokenizer.from_pretrained(model_name, model_max_length=max_length)
+    # class FlaxT5ForConditionalGeneration(FlaxT5PreTrainedModel): 
+    # module_class = FlaxT5ForConditionalGenerationModule
+    # class FlaxT5ForConditionalGenerationModule(nn.Module): __call__()
+    # class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
+    # module_class: nn.Module = None -> gets set to FlaxT5ForConditionalGenerationModule
+    model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
 
-    # generate an epoch by shuffling sampling indices from the train dataset
-    train_loader = data_loader(input_rng, dataset['train'], train_batch_size, shuffle=True)
-    steps_per_epoch = len(dataset['train']) // train_batch_size
-    # train
-    for _ in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
-        batch = next(train_loader)
-        batch = shard(batch)
-        state, train_metric = p_train_step(state, batch)
-        train_metrics.append(train_metric)
+    # dataset
+    qrecc = load_from_disk(data_dir)
+    print(qrecc)
 
-    train_time += time.time() - train_start
+    # removing examples with no context
+    #qrecc = qrecc.filter(lambda x: isinstance(x['context'], str) and isinstance(x['rewrite'], str))
 
-    train_metric = unreplicate(train_metric)
+    #dataset = qrecc.map(
+        #tokenize_dataset,
+        #batched=True,
+        #remove_columns=qrecc['train'].column_names,
+        #desc="Tokenizing dataset",)
 
-    epochs.write(
-        f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate:"
-        f" {train_metric['learning_rate']})"
-    )
+    #print(dataset)
 
-    ### evaluation ###
+    #metric = evaluate.load("rouge")
+    #nltk.download('punkt')
 
-    eval_metrics = []
-    eval_preds = []
-    eval_labels = []
+    # initialize our training
+    # JAX’s random functions produce pseudorandom numbers from the PRNG state, but do not change the state
+    # reusing the same state will cause sadness and monotony, depriving the end user of lifegiving chaos
+    # instead, we split the PRNG to get usable subkeys every time we need a new pseudorandom number
+    # old key -> new key, new subkey
+    # we propagate the key and make new subkeys whenever we need a new random number
+    # print("old key", key)
+    # key, subkey = random.split(key)
+    # normal_pseudorandom = random.normal(subkey, shape=(1,))
+    # print("    \---SPLIT --> new key   ", key)
+    # print("             \--> new subkey", subkey, "--> normal", normal_pseudorandom)
 
-    eval_loader = data_loader(input_rng, dataset['valid'], eval_batch_size, drop_last=False)
-    eval_steps = math.ceil(len(dataset['valid']) / eval_batch_size)
-    for _ in tqdm(range(eval_steps), desc="Evaluating...", position=2, leave=False):
-        # Model forward
-        batch = next(eval_loader)
-        labels = batch["labels"]
+    #rng = jax.random.PRNGKey(seed)
+    #rng, dropout_rng = jax.random.split(rng)
 
-        metrics = pad_shard_unpad(p_eval_step, static_return=True)(
-            state.params, batch, min_device_batch=per_device_eval_batch_size
+    # Store some constants
+    #num_epochs = int(num_train_epochs)
+    #train_batch_size = int(per_device_train_batch_size) 
+    #per_device_eval_batch_size = int(per_device_eval_batch_size)
+    #eval_batch_size = per_device_eval_batch_size * jax.device_count()
+    #steps_per_epoch = len(dataset['train']) // train_batch_size
+    #total_train_steps = steps_per_epoch * num_epochs
+
+    # Create learning rate schedule
+    #linear_decay_lr_schedule_fn = create_learning_rate_fn(
+        #len(dataset['train']),
+        #train_batch_size,
+        #num_train_epochs,
+        #warmup_steps,
+        #learning_rate,)
+
+    # create adam optimizer
+    #adamw = optax.adamw(
+        #learning_rate=linear_decay_lr_schedule_fn,
+        #b1=adam_beta1,
+        #b2=adam_beta2,
+        #eps=adam_epsilon,
+        #weight_decay=weight_decay,
+        #mask=decay_mask_fn,) # mask*
+
+    #state = TrainState.create(
+        #apply_fn=model.__call__, params=model.params,
+        #tx=adamw, dropout_rng=dropout_rng)
+
+    
+    # define generation function
+    #gen_kwargs = {"max_length": max_length, "num_beams": num_beams}
+
+    # create parallel version of the train and eval step
+    """p_train_step = jax.pmap(partial(train_step,
+                                    label_smoothing_factor=label_smoothing_factor),
+                            "batch", donate_argnums=(0,))
+    p_eval_step = jax.pmap(partial(eval_step,
+                                label_smoothing_factor=label_smoothing_factor), "batch")
+    p_generate_step = jax.pmap(generate_step, "batch")
+
+    # replicate the train state on each device
+    state = state.replicate()
+
+    train_time = 0
+    epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
+    for epoch in epochs:
+        ### training ###
+        train_start = time.time()
+
+        # create sampling rng
+        rng, input_rng = jax.random.split(rng)
+        train_metrics = []
+
+        # generate an epoch by shuffling sampling indices from the train dataset
+        train_loader = data_loader(input_rng, dataset['train'], train_batch_size, shuffle=True)
+        steps_per_epoch = len(dataset['train']) // train_batch_size
+        # train
+        for _ in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
+            batch = next(train_loader)
+            batch = shard(batch)
+            state, train_metric = p_train_step(state, batch)
+            train_metrics.append(train_metric)
+
+        train_time += time.time() - train_start
+
+        train_metric = unreplicate(train_metric)
+
+        epochs.write(
+            f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate:"
+            f" {train_metric['learning_rate']})"
         )
-        eval_metrics.append(metrics)
 
-        # generation
-        generated_ids = pad_shard_unpad(p_generate_step)(state.params, batch)
-        eval_preds.extend(jax.device_get(generated_ids.reshape(-1, gen_kwargs["max_length"])))
-        eval_labels.extend(labels)
+        ### evaluation ###
 
-    # normalize eval metrics
-    eval_metrics = get_metrics(eval_metrics)
-    eval_metrics = jax.tree_util.tree_map(jnp.mean, eval_metrics)
+        eval_metrics = []
+        eval_preds = []
+        eval_labels = []
 
-    # compute ROUGE metrics
-    rouge_desc = ""
-    rouge_metrics = compute_metrics(eval_preds, eval_labels)
-    eval_metrics.update(rouge_metrics)
-    rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
+        eval_loader = data_loader(input_rng, dataset['valid'], eval_batch_size, drop_last=False)
+        eval_steps = math.ceil(len(dataset['valid']) / eval_batch_size)
+        for _ in tqdm(range(eval_steps), desc="Evaluating...", position=2, leave=False):
+            # Model forward
+            batch = next(eval_loader)
+            labels = batch["labels"]
 
-    # print metrics and update progress bar
-    desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
-    epochs.write(desc)
-    epochs.desc = desc
+            metrics = pad_shard_unpad(p_eval_step, static_return=True)(
+                state.params, batch, min_device_batch=per_device_eval_batch_size
+            )
+            eval_metrics.append(metrics)
 
-    # save checkpoint after each epoch and push checkpoint to the hub
-    if jax.process_index() == 0:
-        params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params))
-        model.save_pretrained(output_dir, params=params)
-        tokenizer.save_pretrained(output_dir)
+            # generation
+            generated_ids = pad_shard_unpad(p_generate_step)(state.params, batch)
+            eval_preds.extend(jax.device_get(generated_ids.reshape(-1, gen_kwargs["max_length"])))
+            eval_labels.extend(labels)
 
+        # normalize eval metrics
+        eval_metrics = get_metrics(eval_metrics)
+        eval_metrics = jax.tree_util.tree_map(jnp.mean, eval_metrics)
+
+        # compute ROUGE metrics
+        rouge_desc = ""
+        rouge_metrics = compute_metrics(eval_preds, eval_labels)
+        eval_metrics.update(rouge_metrics)
+        rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
+
+        # print metrics and update progress bar
+        desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
+        epochs.write(desc)
+        epochs.desc = desc
+
+        # save checkpoint after each epoch and push checkpoint to the hub
+        if jax.process_index() == 0:
+            params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params))
+            model.save_pretrained(output_dir, params=params)
+            tokenizer.save_pretrained(output_dir)"""
 
 
