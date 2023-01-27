@@ -17,6 +17,7 @@ from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_ke
 from typing import Callable, Optional
 import math
 import nltk
+nltk.download('punkt') # needed for rouge score
 import time
 from functools import partial
 
@@ -40,6 +41,7 @@ output_dir = '/users/ujan/conv-qa/models/qr/'
 data_dir = '/users/ujan/conv-qa/data/interim/qrecc/'
 
 # models
+# same for both qr and rc as of now
 model_name = 't5-base'
 
 
@@ -84,31 +86,6 @@ def shift_tokens_right(input_ids: np.array, pad_token_id: int, decoder_start_tok
 
     shifted_input_ids = np.where(shifted_input_ids == -100, pad_token_id, shifted_input_ids)
     return shifted_input_ids
-
-
-# tokenize dataset
-def tokenize_dataset(batch):
-    # need fixed length inputs for jitted functions
-    model_inputs = tokenizer(batch['context'], batch['question'], padding='max_length',
-                             truncation='only_first',
-                             max_length=max_length, return_tensors="np")
-    
-    labels = tokenizer(
-        text_target=batch['rewrite'],
-        max_length=max_length,
-        padding="max_length",
-        truncation=True,
-        return_tensors="np",)
-    
-    model_inputs["labels"] = labels["input_ids"]
-    decoder_input_ids = shift_tokens_right(
-        labels["input_ids"], model.config.pad_token_id, model.config.decoder_start_token_id)
-    model_inputs["decoder_input_ids"] = np.asarray(decoder_input_ids)
-
-    # we need decoder_attention_mask so we can ignore pad tokens from loss
-    model_inputs["decoder_attention_mask"] = labels["attention_mask"]
-
-    return model_inputs
 
 
 
@@ -303,7 +280,7 @@ def generate_step(params, batch):
 
 if __name__ == '__main__':
     
-    # tokenizer and model
+    # Tokenizer and Model #
 
     tokenizer = T5Tokenizer.from_pretrained(model_name, model_max_length=max_length)
     # class FlaxT5ForConditionalGeneration(FlaxT5PreTrainedModel): 
@@ -311,15 +288,71 @@ if __name__ == '__main__':
     # class FlaxT5ForConditionalGenerationModule(nn.Module): __call__()
     # class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
     # module_class: nn.Module = None -> gets set to FlaxT5ForConditionalGenerationModule
-    model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
+    qr_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
+    rc_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
 
-    # dataset
+    # Dataset #
     qrecc = load_from_disk(data_dir)
     print(qrecc)
 
     # removing examples with no context
+    ### maybe not?
     qrecc = qrecc.filter(lambda x: isinstance(x['context'], str) and isinstance(x['rewrite'], str))
 
+    # tokenize dataset function
+    def tokenize_dataset(batch):
+        # need fixed length inputs for jitted functions
+        qr_inputs = tokenizer(
+            batch['context'], batch['question'], padding='max_length',
+            truncation='only_first', max_length=max_length, return_tensors="np")
+
+        rc_inputs = tokenizer(
+            batch['passage'], batch['rewrite'], padding='max_length',
+            truncation='only_first', max_length=max_length, return_tensors="np")
+        
+        qr_labels = tokenizer(
+            text_target=batch['rewrite'],
+            max_length=max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="np",)
+
+        rc_labels = tokenizer(
+            text_target=batch['answer'],
+            max_length=max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="np",)
+
+        # prepare decoder input ids by shifting tokens right
+        # no 'labels' in flax model
+        qr_decoder_input_ids = shift_tokens_right(
+            qr_labels["input_ids"], qr_model.config.pad_token_id, qr_model.config.decoder_start_token_id)
+        rc_decoder_input_ids = shift_tokens_right(
+            rc_labels["input_ids"], rc_model.config.pad_token_id, rc_model.config.decoder_start_token_id)
+
+        # combine dicts
+        model_inputs = {}
+        # input ids
+        model_inputs["qr_input_ids"] = qr_inputs["input_ids"]
+        model_inputs["rc_input_ids"] = rc_inputs["input_ids"]
+        # attention mask
+        model_inputs["qr_attention_mask"] = qr_inputs["attention_mask"]
+        model_inputs["rc_attention_mask"] = rc_inputs["attention_mask"]
+        # labels
+        model_inputs["qr_labels"] = qr_labels["input_ids"]
+        model_inputs["rc_labels"] = rc_labels["input_ids"]
+        # decoder input ids
+        model_inputs["qr_decoder_input_ids"] = np.asarray(qr_decoder_input_ids)
+        model_inputs["rc_decoder_input_ids"] = np.asarray(rc_decoder_input_ids)
+        # decoder attention mask
+        # we need decoder_attention_mask so we can ignore pad tokens from loss
+        model_inputs["qr_decoder_attention_mask"] = qr_labels["attention_mask"]
+        model_inputs["rc_decoder_attention_mask"] = rc_labels["attention_mask"]
+
+        return model_inputs
+
+    # tokenize dataset
     dataset = qrecc.map(
         tokenize_dataset,
         batched=True,
@@ -328,10 +361,14 @@ if __name__ == '__main__':
 
     print(dataset)
 
-    metric = evaluate.load("rouge")
-    nltk.download('punkt')
+    quit()
 
-    # initialize our training
+    # Metrics #
+    qr_metric = evaluate.load("rouge")
+    # rc metric is F1
+
+    # Training #
+    # rng
     # JAX’s random functions produce pseudorandom numbers from the PRNG state, but do not change the state
     # reusing the same state will cause sadness and monotony, depriving the end user of lifegiving chaos
     # instead, we split the PRNG to get usable subkeys every time we need a new pseudorandom number
@@ -342,11 +379,10 @@ if __name__ == '__main__':
     # normal_pseudorandom = random.normal(subkey, shape=(1,))
     # print("    \---SPLIT --> new key   ", key)
     # print("             \--> new subkey", subkey, "--> normal", normal_pseudorandom)
-
     rng = jax.random.PRNGKey(seed)
     rng, dropout_rng = jax.random.split(rng)
 
-    # Store some constants
+    # training constants
     num_epochs = int(num_train_epochs)
     train_batch_size = int(per_device_train_batch_size) 
     per_device_eval_batch_size = int(per_device_eval_batch_size)
@@ -354,7 +390,7 @@ if __name__ == '__main__':
     steps_per_epoch = len(dataset['train']) // train_batch_size
     total_train_steps = steps_per_epoch * num_epochs
 
-    # Create learning rate schedule
+    # learning rate schedule
     linear_decay_lr_schedule_fn = create_learning_rate_fn(
         len(dataset['train']),
         train_batch_size,
@@ -362,7 +398,7 @@ if __name__ == '__main__':
         warmup_steps,
         learning_rate,)
 
-    # create adam optimizer
+    # adam optimizer
     adamw = optax.adamw(
         learning_rate=linear_decay_lr_schedule_fn,
         b1=adam_beta1,
@@ -371,13 +407,15 @@ if __name__ == '__main__':
         weight_decay=weight_decay,
         mask=decay_mask_fn,) # mask*
 
+    # train state
     state = TrainState.create(
         apply_fn=model.__call__, params=model.params,
         tx=adamw, dropout_rng=dropout_rng)
 
     
-    # define generation function
+    # define generation function for eval with generation
     gen_kwargs = {"max_length": max_length, "num_beams": num_beams}
+
 
     # create parallel version of the train and eval step
     p_train_step = jax.pmap(partial(train_step,
@@ -386,6 +424,7 @@ if __name__ == '__main__':
     p_eval_step = jax.pmap(partial(eval_step,
                                 label_smoothing_factor=label_smoothing_factor), "batch")
     p_generate_step = jax.pmap(generate_step, "batch")
+
 
     # replicate the train state on each device
     state = state.replicate()
@@ -431,7 +470,7 @@ if __name__ == '__main__':
         eval_loader = data_loader(input_rng, dataset['valid'], eval_batch_size, drop_last=False)
         eval_steps = math.ceil(len(dataset['valid']) / eval_batch_size)
         for _ in tqdm(range(eval_steps), desc="Evaluating...", position=2, leave=False):
-            # Model forward
+            # model forward
             batch = next(eval_loader)
             labels = batch["labels"]
 

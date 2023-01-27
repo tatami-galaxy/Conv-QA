@@ -314,8 +314,9 @@ if __name__ == '__main__':
     model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
 
     # dataset
-    qrecc = load_from_disk(data_dir)
+    qrecc = load_from_disk(data_dir)  # has no_ans
     print(qrecc)
+
 
     # removing examples with no context
     qrecc = qrecc.filter(lambda x: isinstance(x['context'], str) and isinstance(x['rewrite'], str))
@@ -326,7 +327,6 @@ if __name__ == '__main__':
         remove_columns=qrecc['train'].column_names,
         desc="Tokenizing dataset",)
 
-    print(dataset)
 
     metric = evaluate.load("rouge")
     nltk.download('punkt')
