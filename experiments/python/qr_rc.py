@@ -17,7 +17,7 @@ from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_ke
 from typing import Callable, Optional
 import math
 import nltk
-nltk.download('punkt') # needed for rouge score
+#nltk.download('punkt') # needed for rouge score
 import time
 from functools import partial
 
@@ -217,7 +217,16 @@ def loss_fn(logits, labels, padding_mask, label_smoothing_factor=0.0):
 def train_step(state, batch, label_smoothing_factor=0.0):
     dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
-    def compute_loss(params):
+    def compute_loss_qr(params):
+        print('compute loss qr')
+        print(batch)
+        quit()
+        labels = batch.pop("labels")
+        logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
+        loss, num_labels = loss_fn(logits, labels, batch["decoder_attention_mask"], label_smoothing_factor)
+        return loss, num_labels  # therefore has_aux=True
+
+    def compute_loss_rc(params):
         labels = batch.pop("labels")
         logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
         loss, num_labels = loss_fn(logits, labels, batch["decoder_attention_mask"], label_smoothing_factor)
@@ -227,7 +236,7 @@ def train_step(state, batch, label_smoothing_factor=0.0):
     # indicates whether fun (Function to be differentiated) returns a pair where the first element
     # is considered the output of the mathematical function to be differentiated
     # and the second element is auxiliary data. Default False
-    grad_fn = jax.value_and_grad(compute_loss, has_aux=True)
+    grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
 
     # if has_aux is True then a tuple of ((value, auxiliary_data), gradient) is returned
     (loss, num_labels), grad = grad_fn(state.params)
@@ -293,7 +302,7 @@ if __name__ == '__main__':
 
     # Dataset #
     qrecc = load_from_disk(data_dir)
-    print(qrecc)
+    #print(qrecc)
 
     # removing examples with no context
     ### maybe not?
@@ -353,15 +362,13 @@ if __name__ == '__main__':
         return model_inputs
 
     # tokenize dataset
+    # input_ids, attention_mask, labels, decoder_input_ids, decoder_attention_mask for qr and rc
     dataset = qrecc.map(
         tokenize_dataset,
         batched=True,
         remove_columns=qrecc['train'].column_names,
         desc="Tokenizing dataset",)
 
-    print(dataset)
-
-    quit()
 
     # Metrics #
     qr_metric = evaluate.load("rouge")
@@ -407,9 +414,12 @@ if __name__ == '__main__':
         weight_decay=weight_decay,
         mask=decay_mask_fn,) # mask*
 
-    # train state
-    state = TrainState.create(
-        apply_fn=model.__call__, params=model.params,
+    # train states
+    qr_state = TrainState.create(
+        apply_fn=qr_model.__call__, params= qr_model.params,
+        tx=adamw, dropout_rng=dropout_rng)
+    rc_state = TrainState.create(
+        apply_fn=rc_model.__call__, params=rc_model.params,
         tx=adamw, dropout_rng=dropout_rng)
 
     
@@ -426,8 +436,9 @@ if __name__ == '__main__':
     p_generate_step = jax.pmap(generate_step, "batch")
 
 
-    # replicate the train state on each device
-    state = state.replicate()
+    # replicate the train states on each device
+    qr_state = qr_state.replicate()
+    rc_state = rc_state.replicate()
 
     train_time = 0
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
@@ -445,8 +456,8 @@ if __name__ == '__main__':
         # train
         for _ in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
             batch = next(train_loader)
-            batch = shard(batch)
-            state, train_metric = p_train_step(state, batch)
+            batch = shard(batch) # for multi gpu
+            qr_state, train_metric = p_train_step(qr_state, batch)
             train_metrics.append(train_metric)
 
             print('one batch')
