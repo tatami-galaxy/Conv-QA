@@ -1,4 +1,3 @@
-
 from datasets import load_dataset, load_metric, load_from_disk
 from transformers import T5Tokenizer, FlaxT5ForConditionalGeneration
 import datasets
@@ -20,6 +19,9 @@ import nltk
 #nltk.download('punkt') # needed for rouge score
 import time
 from functools import partial
+import collections
+from typing import List
+
 
 # hyperparameters
 max_length = 256  # can also have different max_length for train, eval, generate
@@ -43,6 +45,10 @@ data_dir = '/users/ujan/conv-qa/data/interim/qrecc/'
 # models
 # same for both qr and rc as of now
 model_name = 't5-base'
+
+# Metrics #
+qr_metric = evaluate.load("rouge")
+# rc metric is F1
 
 
 # data loader
@@ -107,11 +113,28 @@ def compute_metrics(preds, labels):
     # Some simple post-processing
     decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
 
-    result = metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
+    result = qr_metric.compute(predictions=decoded_preds, references=decoded_labels, use_stemmer=True)
     result = {k: round(v * 100, 4) for k, v in result.items()}
     prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
     result["gen_len"] = np.mean(prediction_lens)
     return result
+
+# F1 metric
+def compute_f1_from_tokens(gold_toks: List[str], pred_toks: List[str]) -> float:
+    common = collections.Counter(gold_toks) & collections.Counter(pred_toks)
+    num_same = sum(common.values())
+
+    if len(gold_toks) == 0 or len(pred_toks) == 0:
+        # if either is no-answer, then F1 is 1 if they agree, 0 otherwise
+        return int(gold_toks == pred_toks)
+
+    if num_same == 0:
+        return 0
+
+    precision = 1.0 * num_same / len(pred_toks)
+    recall = 1.0 * num_same / len(gold_toks)
+    f1 = (2 * precision * recall) / (precision + recall)
+    return f1
 
 
 # learning rate function
@@ -214,29 +237,45 @@ def loss_fn(logits, labels, padding_mask, label_smoothing_factor=0.0):
 
 
 # define gradient update step fn
-def train_step(state, batch, label_smoothing_factor=0.0):
+def train_step(state, batch, label_smoothing_factor=0.0, model_str=None):
     dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
     def compute_loss_qr(params):
-        print('compute loss qr')
-        print(batch)
-        quit()
-        labels = batch.pop("labels")
-        logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
-        loss, num_labels = loss_fn(logits, labels, batch["decoder_attention_mask"], label_smoothing_factor)
+        labels = batch.pop("qr_labels")
+        # params for FLaxT5PreTrainedModel __call__
+        logits = state.apply_fn(
+            input_ids=batch["qr_input_ids"],
+            attention_mask=batch["qr_attention_mask"],
+            decoder_input_ids=batch["qr_decoder_input_ids"],
+            decoder_attention_mask=batch["qr_decoder_attention_mask"],
+            params=params,
+            dropout_rng=dropout_rng,
+            train=True)[0]
+        loss, num_labels = loss_fn(logits, labels, batch["qr_decoder_attention_mask"], label_smoothing_factor)
         return loss, num_labels  # therefore has_aux=True
 
     def compute_loss_rc(params):
-        labels = batch.pop("labels")
-        logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
-        loss, num_labels = loss_fn(logits, labels, batch["decoder_attention_mask"], label_smoothing_factor)
+        labels = batch.pop("rc_labels")
+        # params for FLaxT5PreTrainedModel __call__
+        logits = state.apply_fn(
+            input_ids=batch["rc_input_ids"],
+            attention_mask=batch["rc_attention_mask"],
+            decoder_input_ids=batch["rc_decoder_input_ids"],
+            decoder_attention_mask=batch["rc_decoder_attention_mask"],
+            params=params,
+            dropout_rng=dropout_rng,
+            train=True)[0]
+        loss, num_labels = loss_fn(logits, labels, batch["rc_decoder_attention_mask"], label_smoothing_factor)
         return loss, num_labels  # therefore has_aux=True
 
     # has_aux (bool)
     # indicates whether fun (Function to be differentiated) returns a pair where the first element
     # is considered the output of the mathematical function to be differentiated
     # and the second element is auxiliary data. Default False
-    grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
+    if model_str == 'qr':
+        grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
+    elif model_str =='rc':
+        grad_fn = jax.value_and_grad(compute_loss_rc, has_aux=True)
 
     # if has_aux is True then a tuple of ((value, auxiliary_data), gradient) is returned
     (loss, num_labels), grad = grad_fn(state.params)
@@ -257,11 +296,28 @@ def train_step(state, batch, label_smoothing_factor=0.0):
 
 
 # define eval fn
-def eval_step(params, batch, label_smoothing_factor=0.0):
-    labels = batch.pop("labels")
-    logits = model(**batch, params=params, train=False)[0]
+def eval_step(params, batch, label_smoothing_factor=0.0, model_str=None):
+    if model_str == 'qr':
+        labels = batch.pop("qr_labels")
+        logits = qr_model(
+            input_ids=batch["qr_input_ids"],
+            attention_mask=batch["qr_attention_mask"],
+            decoder_input_ids=batch["qr_decoder_input_ids"],
+            decoder_attention_mask=batch["qr_decoder_attention_mask"],
+            params=params,
+            train=False)[0]
+        loss, num_labels = loss_fn(logits, labels, batch["qr_decoder_attention_mask"], label_smoothing_factor)
+    elif model_str == 'rc':
+        labels = batch.pop("rc_labels")
+        logits = rc_model(
+            input_ids=batch["rc_input_ids"],
+            attention_mask=batch["rc_attention_mask"],
+            decoder_input_ids=batch["rc_decoder_input_ids"],
+            decoder_attention_mask=batch["rc_decoder_attention_mask"],
+            params=params,
+            train=False)[0]
+        loss, num_labels = loss_fn(logits, labels, batch["rc_decoder_attention_mask"], label_smoothing_factor)
 
-    loss, num_labels = loss_fn(logits, labels, batch["decoder_attention_mask"], label_smoothing_factor)
     num_labels = jax.lax.psum(num_labels, "batch")
 
     # true loss = total loss / total samples
@@ -279,9 +335,13 @@ def eval_step(params, batch, label_smoothing_factor=0.0):
 
 
 
-def generate_step(params, batch):
-    model.params = params
-    output_ids = model.generate(batch["input_ids"], attention_mask=batch["attention_mask"], **gen_kwargs)
+def generate_step(params, batch, model_str):
+    if model_str == 'qr':
+        qr_model.params = params
+        output_ids = qr_model.generate(batch["input_ids"], attention_mask=batch["attention_mask"], **gen_kwargs)
+    elif model_str == 'rc':
+        rc_model.params = params
+        output_ids = rc_model.generate(batch["input_ids"], attention_mask=batch["attention_mask"], **gen_kwargs)
     return output_ids.sequences
 
 
@@ -292,11 +352,7 @@ if __name__ == '__main__':
     # Tokenizer and Model #
 
     tokenizer = T5Tokenizer.from_pretrained(model_name, model_max_length=max_length)
-    # class FlaxT5ForConditionalGeneration(FlaxT5PreTrainedModel): 
-    # module_class = FlaxT5ForConditionalGenerationModule
-    # class FlaxT5ForConditionalGenerationModule(nn.Module): __call__()
-    # class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
-    # module_class: nn.Module = None -> gets set to FlaxT5ForConditionalGenerationModule
+
     qr_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
     rc_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
 
@@ -370,10 +426,6 @@ if __name__ == '__main__':
         desc="Tokenizing dataset",)
 
 
-    # Metrics #
-    qr_metric = evaluate.load("rouge")
-    # rc metric is F1
-
     # Training #
     # rng
     # JAX’s random functions produce pseudorandom numbers from the PRNG state, but do not change the state
@@ -415,6 +467,7 @@ if __name__ == '__main__':
         mask=decay_mask_fn,) # mask*
 
     # train states
+    # FLaxT5PreTrainedModel __call__ 
     qr_state = TrainState.create(
         apply_fn=qr_model.__call__, params= qr_model.params,
         tx=adamw, dropout_rng=dropout_rng)
@@ -422,7 +475,7 @@ if __name__ == '__main__':
         apply_fn=rc_model.__call__, params=rc_model.params,
         tx=adamw, dropout_rng=dropout_rng)
 
-    
+
     # define generation function for eval with generation
     gen_kwargs = {"max_length": max_length, "num_beams": num_beams}
 
@@ -448,7 +501,8 @@ if __name__ == '__main__':
 
         # create sampling rng
         rng, input_rng = jax.random.split(rng)
-        train_metrics = []
+        qr_train_metrics = []
+        rc_train_metrics = []
 
         # generate an epoch by shuffling sampling indices from the train dataset
         train_loader = data_loader(input_rng, dataset['train'], train_batch_size, shuffle=True)
@@ -457,63 +511,101 @@ if __name__ == '__main__':
         for _ in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
             batch = next(train_loader)
             batch = shard(batch) # for multi gpu
-            qr_state, train_metric = p_train_step(qr_state, batch)
-            train_metrics.append(train_metric)
+            qr_state, qr_train_metric = p_train_step(qr_state, batch, model_str='qr')
+            rc_state, rc_train_metric = p_train_step(rc_state, batch, model_str='rc')
 
-            print('one batch')
-            quit()
+            qr_train_metrics.append(qr_train_metric)
+            rc_train_metrics.append(rc_train_metric)
 
         train_time += time.time() - train_start
 
-        train_metric = unreplicate(train_metric)
+        qr_train_metric = unreplicate(qr_train_metric)
+        rc_train_metric = unreplicate(rc_train_metric)
 
         epochs.write(
-            f"Epoch... ({epoch + 1}/{num_epochs} | Loss: {train_metric['loss']}, Learning Rate:"
-            f" {train_metric['learning_rate']})"
+            f"Epoch... ({epoch + 1}/{num_epochs} | QR loss: {qr_train_metric['loss']}, QR Learning Rate:"
+            f" {qr_train_metric['learning_rate']})"
+            f" | RC loss: {rc_train_metric['loss']}, RC Learning Rate:"
+            f" {rc_train_metric['learning_rate']})"
         )
 
         ### evaluation ###
 
-        eval_metrics = []
-        eval_preds = []
-        eval_labels = []
+        qr_eval_metrics = []
+        qr_eval_preds = []
+        qr_eval_labels = []
+
+        rc_eval_metrics = []
+        rc_eval_preds = []
+        rc_eval_labels = []
+
+        f1_score = 0
 
         eval_loader = data_loader(input_rng, dataset['valid'], eval_batch_size, drop_last=False)
         eval_steps = math.ceil(len(dataset['valid']) / eval_batch_size)
         for _ in tqdm(range(eval_steps), desc="Evaluating...", position=2, leave=False):
             # model forward
             batch = next(eval_loader)
-            labels = batch["labels"]
+            qr_labels = batch["qr_labels"]
+            rc_labels = batch["rc_labels"]
 
-            metrics = pad_shard_unpad(p_eval_step, static_return=True)(
-                state.params, batch, min_device_batch=per_device_eval_batch_size
+            qr_metrics = pad_shard_unpad(p_eval_step, static_return=True)(
+                qr_state.params, batch, min_device_batch=per_device_eval_batch_size,
+                model_str = 'qr'
             )
-            eval_metrics.append(metrics)
+            rc_metrics = pad_shard_unpad(p_eval_step, static_return=True)(
+                rc_state.params, batch, min_device_batch=per_device_eval_batch_size,
+                model_str='rc'
+            )
+            qr_eval_metrics.append(qr_metrics)
+            rc_eval_metrics.append(rc_metrics)
 
             # generation
-            generated_ids = pad_shard_unpad(p_generate_step)(state.params, batch)
-            eval_preds.extend(jax.device_get(generated_ids.reshape(-1, gen_kwargs["max_length"])))
-            eval_labels.extend(labels)
+            qr_generated_ids = pad_shard_unpad(p_generate_step)(qr_state.params, batch, 'qr')
+            rc_generated_ids = pad_shard_unpad(p_generate_step)(rc_state.params, batch, 'rc')
+
+            qr_eval_preds.extend(jax.device_get(qr_generated_ids.reshape(-1, gen_kwargs["max_length"])))
+            rc_eval_preds.extend(jax.device_get(rc_generated_ids.reshape(-1, gen_kwargs["max_length"])))
+
+            qr_eval_labels.extend(qr_labels)
+            rc_eval_labels.extend(rc_labels)
 
         # normalize eval metrics
-        eval_metrics = get_metrics(eval_metrics)
-        eval_metrics = jax.tree_util.tree_map(jnp.mean, eval_metrics)
+        qr_eval_metrics = get_metrics(qr_eval_metrics)
+        qr_eval_metrics = jax.tree_util.tree_map(jnp.mean, qr_eval_metrics)
+
+        rc_eval_metrics = get_metrics(rc_eval_metrics)
+        rc_eval_metrics = jax.tree_util.tree_map(jnp.mean, rc_eval_metrics)
 
         # compute ROUGE metrics
         rouge_desc = ""
-        rouge_metrics = compute_metrics(eval_preds, eval_labels)
-        eval_metrics.update(rouge_metrics)
-        rouge_desc = " ".join([f"Eval {key}: {value} |" for key, value in rouge_metrics.items()])
+        qr_rouge_metrics = compute_metrics(qr_eval_preds, qr_eval_labels)
+        qr_eval_metrics.update(qr_rouge_metrics)
+        rouge_desc = " ".join([f"QR Eval {key}: {value} |" for key, value in qr_rouge_metrics.items()])
+
+        # compute F1 metrics
+        # decode to strings
+        # eval_preds (and labels) -> list of all preds, each a numpy array of token_ids of max_length
+        decoded_preds = tokenizer.batch_decode(rc_eval_preds, skip_special_tokens=True)
+        decoded_labels = tokenizer.batch_decode(rc_eval_labels, skip_special_tokens=True)
+
+        # calculate F1
+        for refs, preds in zip([x.split() for x in decoded_labels], [y.split() for y in decoded_preds]):
+            f1_score += compute_f1_from_tokens(refs, preds)
+
+        f1_desc = "Eval F1: {}".format(f1_score/len(decoded_preds))
 
         # print metrics and update progress bar
-        desc = f"Epoch... ({epoch + 1}/{num_epochs} | Eval Loss: {eval_metrics['loss']} | {rouge_desc})"
-        epochs.write(desc)
-        epochs.desc = desc
+        epochs.write(
+            f"Epoch... ({epoch + 1}/{num_epochs} | QR Eval Loss: {qr_eval_metrics['loss']} | {rouge_desc})"
+            f" | RC Eval Loss: {rc_eval_metrics['loss']} | {f1_desc})")
 
         # save checkpoint after each epoch and push checkpoint to the hub
         if jax.process_index() == 0:
-            params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params))
-            model.save_pretrained(output_dir, params=params)
+            qr_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], qr_state.params))
+            rc_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], rc_state.params))
+            qr_model.save_pretrained(output_dir, params=qr_params)
+            rc_model.save_pretrained(output_dir, params=rc_params)
             tokenizer.save_pretrained(output_dir)
 
 
