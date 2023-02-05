@@ -19,6 +19,7 @@ import math
 import nltk
 import time
 from functools import partial
+from os.path import dirname, abspath
 
 # hyperparameters
 max_length = 256  # can also have different max_length for train, eval, generate
@@ -35,12 +36,19 @@ adam_epsilon = 1e-8
 weight_decay = 0.0
 label_smoothing_factor = 0.0
 
+# get root directory
+root = abspath(__file__)
+while root.split('/')[-1] != 'conv-qa':
+    root = dirname(root)
+
+
 # directories
-output_dir = '/users/ujan/conv-qa/models/qr/'
-data_dir = '/users/ujan/conv-qa/data/interim/qrecc/'
+output_dir = root+'/models/qr/'
+data_dir = root+'/data/interim/qrecc/'
 
 # models
 model_name = 't5-base'
+
 
 
 # data loader
@@ -409,9 +417,6 @@ if __name__ == '__main__':
             batch = shard(batch)
             state, train_metric = p_train_step(state, batch)
             train_metrics.append(train_metric)
-
-            print('one batch')
-            quit()
 
         train_time += time.time() - train_start
 

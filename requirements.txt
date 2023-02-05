@@ -1,4 +1,10 @@
+vim
 pytorch
 transformers
 sentencepiece
 datasets
+evaluate
+jax
+flax
+nltk
+rouge_score
