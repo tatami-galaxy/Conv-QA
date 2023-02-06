@@ -21,6 +21,7 @@ import time
 from functools import partial
 import collections
 from typing import List
+from os.path import dirname, abspath
 
 
 # hyperparameters
@@ -38,10 +39,14 @@ adam_epsilon = 1e-8
 weight_decay = 0.0
 label_smoothing_factor = 0.0
 
-# directories
-output_dir = '/users/ujan/conv-qa/models/qr/'
-data_dir = '/users/ujan/conv-qa/data/interim/qrecc/'
+# get root directory
+root = abspath(__file__)
+while root.split('/')[-1] != 'conv-qa':
+    root = dirname(root)
 
+# directories
+output_dir = root+'/models/qr/'
+data_dir = root+'/data/interim/qrecc/'
 # models
 # same for both qr and rc as of now
 model_name = 't5-base'
@@ -237,7 +242,7 @@ def loss_fn(logits, labels, padding_mask, label_smoothing_factor=0.0):
 
 
 # define gradient update step fn
-def train_step(state, batch, label_smoothing_factor=0.0, model_str=None):
+def train_step(state, batch, model_str, label_smoothing_factor=0.0):
     dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
 
     def compute_loss_qr(params):
@@ -296,7 +301,7 @@ def train_step(state, batch, label_smoothing_factor=0.0, model_str=None):
 
 
 # define eval fn
-def eval_step(params, batch, label_smoothing_factor=0.0, model_str=None):
+def eval_step(params, batch, model_str, label_smoothing_factor=0.0):
     if model_str == 'qr':
         labels = batch.pop("qr_labels")
         logits = qr_model(
@@ -351,17 +356,20 @@ if __name__ == '__main__':
     
     # Tokenizer and Model #
 
+    print('loading tokenizer')
     tokenizer = T5Tokenizer.from_pretrained(model_name, model_max_length=max_length)
-
+    print('loading models')
     qr_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
     rc_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
 
     # Dataset #
+    print('loading dataset from disk')
     qrecc = load_from_disk(data_dir)
     #print(qrecc)
 
     # removing examples with no context
     ### maybe not?
+    print('removing examples with no context')
     qrecc = qrecc.filter(lambda x: isinstance(x['context'], str) and isinstance(x['rewrite'], str))
 
     # tokenize dataset function
@@ -423,7 +431,7 @@ if __name__ == '__main__':
         tokenize_dataset,
         batched=True,
         remove_columns=qrecc['train'].column_names,
-        desc="Tokenizing dataset",)
+        desc="tokenizing dataset",)
 
 
     # Training #
@@ -438,6 +446,7 @@ if __name__ == '__main__':
     # normal_pseudorandom = random.normal(subkey, shape=(1,))
     # print("    \---SPLIT --> new key   ", key)
     # print("             \--> new subkey", subkey, "--> normal", normal_pseudorandom)
+    print('jax rng')
     rng = jax.random.PRNGKey(seed)
     rng, dropout_rng = jax.random.split(rng)
 
@@ -450,6 +459,7 @@ if __name__ == '__main__':
     total_train_steps = steps_per_epoch * num_epochs
 
     # learning rate schedule
+    print('learning rate schedule')
     linear_decay_lr_schedule_fn = create_learning_rate_fn(
         len(dataset['train']),
         train_batch_size,
@@ -458,6 +468,7 @@ if __name__ == '__main__':
         learning_rate,)
 
     # adam optimizer
+    print('optimizer')
     adamw = optax.adamw(
         learning_rate=linear_decay_lr_schedule_fn,
         b1=adam_beta1,
@@ -468,6 +479,7 @@ if __name__ == '__main__':
 
     # train states
     # FLaxT5PreTrainedModel __call__ 
+    print('train states')
     qr_state = TrainState.create(
         apply_fn=qr_model.__call__, params= qr_model.params,
         tx=adamw, dropout_rng=dropout_rng)
@@ -481,11 +493,14 @@ if __name__ == '__main__':
 
 
     # create parallel version of the train and eval step
+    # static_broadcasted_argnums -> an int or collection of ints 
+    # specifying which positional arguments to treat as static (compile-time constant)
     p_train_step = jax.pmap(partial(train_step,
                                     label_smoothing_factor=label_smoothing_factor),
-                            "batch", donate_argnums=(0,))
+                            "batch", donate_argnums=(0,), static_broadcasted_argnums=2)  # donate_argnums ?
     p_eval_step = jax.pmap(partial(eval_step,
-                                label_smoothing_factor=label_smoothing_factor), "batch")
+                                label_smoothing_factor=label_smoothing_factor), "batch",
+                                static_broadcasted_argnums=2)
     p_generate_step = jax.pmap(generate_step, "batch")
 
 
@@ -494,6 +509,7 @@ if __name__ == '__main__':
     rc_state = rc_state.replicate()
 
     train_time = 0
+    print('starting training')
     epochs = tqdm(range(num_epochs), desc=f"Epoch ... (1/{num_epochs})", position=0)
     for epoch in epochs:
         ### training ###
@@ -511,11 +527,13 @@ if __name__ == '__main__':
         for _ in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
             batch = next(train_loader)
             batch = shard(batch) # for multi gpu
-            qr_state, qr_train_metric = p_train_step(qr_state, batch, model_str='qr')
-            rc_state, rc_train_metric = p_train_step(rc_state, batch, model_str='rc')
+            qr_state, qr_train_metric = p_train_step(qr_state, batch, 'qr')
+            rc_state, rc_train_metric = p_train_step(rc_state, batch, 'rc')
 
             qr_train_metrics.append(qr_train_metric)
             rc_train_metrics.append(rc_train_metric)
+
+            print('working')
 
         train_time += time.time() - train_start
 
@@ -530,7 +548,6 @@ if __name__ == '__main__':
         )
 
         ### evaluation ###
-
         qr_eval_metrics = []
         qr_eval_preds = []
         qr_eval_labels = []
@@ -604,6 +621,7 @@ if __name__ == '__main__':
         if jax.process_index() == 0:
             qr_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], qr_state.params))
             rc_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], rc_state.params))
+            print('saving')
             qr_model.save_pretrained(output_dir, params=qr_params)
             rc_model.save_pretrained(output_dir, params=rc_params)
             tokenizer.save_pretrained(output_dir)
