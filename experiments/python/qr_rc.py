@@ -1,5 +1,6 @@
 from datasets import load_dataset, load_metric, load_from_disk
 from transformers import T5Tokenizer, FlaxT5ForConditionalGeneration
+from transformers import set_seed
 import datasets
 import numpy as np
 from datasets import Dataset, load_dataset
@@ -29,7 +30,7 @@ max_length = 256  # can also have different max_length for train, eval, generate
 num_beams = 1  # 1 -> no beam search
 per_device_train_batch_size = 16
 per_device_eval_batch_size= 16
-seed = 42
+seed = 42 # 37, 52
 num_train_epochs = 5
 warmup_steps = 1000
 learning_rate = 1e-5
@@ -356,8 +357,10 @@ def generate_step(params, batch, model_str):
 
 if __name__ == '__main__':
     
-    # Tokenizer and Model #
-
+    # set seed
+    set_seed(seed)
+    
+    # tokenizer and Model #
     print('loading tokenizer')
     tokenizer = T5Tokenizer.from_pretrained(model_name, model_max_length=max_length)
     print('loading models')
