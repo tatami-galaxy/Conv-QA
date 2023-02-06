@@ -345,10 +345,10 @@ def eval_step(params, batch, model_str, label_smoothing_factor=0.0):
 def generate_step(params, batch, model_str):
     if model_str == 'qr':
         qr_model.params = params
-        output_ids = qr_model.generate(batch["input_ids"], attention_mask=batch["attention_mask"], **gen_kwargs)
+        output_ids = qr_model.generate(batch["qr_input_ids"], attention_mask=batch["qr_attention_mask"], **gen_kwargs)
     elif model_str == 'rc':
         rc_model.params = params
-        output_ids = rc_model.generate(batch["input_ids"], attention_mask=batch["attention_mask"], **gen_kwargs)
+        output_ids = rc_model.generate(batch["rc_input_ids"], attention_mask=batch["rc_attention_mask"], **gen_kwargs)
     return output_ids.sequences
 
 
@@ -497,13 +497,19 @@ if __name__ == '__main__':
     # create parallel version of the train and eval step
     # static_broadcasted_argnums -> an int or collection of ints 
     # specifying which positional arguments to treat as static (compile-time constant)
-    p_train_step = jax.pmap(partial(train_step,
-                                    label_smoothing_factor=label_smoothing_factor),
-                            "batch", donate_argnums=(0,), static_broadcasted_argnums=2)  # donate_argnums ?
-    p_eval_step = jax.pmap(partial(eval_step,
-                                label_smoothing_factor=label_smoothing_factor), "batch",
-                                static_broadcasted_argnums=2)
-    p_generate_step = jax.pmap(generate_step, "batch")
+    p_train_step = jax.pmap(partial(
+        train_step,
+        label_smoothing_factor=label_smoothing_factor), "batch",
+        donate_argnums=(0,), static_broadcasted_argnums=2)  # donate_argnums ?
+
+    p_eval_step = jax.pmap(partial(
+        eval_step,
+        label_smoothing_factor=label_smoothing_factor), "batch",
+        static_broadcasted_argnums=2)
+
+    p_generate_step = jax.pmap(
+            generate_step, "batch",
+            static_broadcasted_argnums=2)
 
 
     # replicate the train states on each device
@@ -566,20 +572,18 @@ if __name__ == '__main__':
             qr_labels = batch["qr_labels"]
             rc_labels = batch["rc_labels"]
 
-            qr_metrics = pad_shard_unpad(p_eval_step, static_return=True)(
-                qr_state.params, batch, min_device_batch=per_device_eval_batch_size,
-                model_str = 'qr'
+            qr_metrics = pad_shard_unpad(p_eval_step, static_argnums=(0, 2), static_return=True)(
+                qr_state.params, batch, 'qr', min_device_batch=per_device_eval_batch_size
             )
-            rc_metrics = pad_shard_unpad(p_eval_step, static_return=True)(
-                rc_state.params, batch, min_device_batch=per_device_eval_batch_size,
-                model_str='rc'
+            rc_metrics = pad_shard_unpad(p_eval_step, static_argnums=(0, 2), static_return=True)(
+                rc_state.params, batch, 'rc', min_device_batch=per_device_eval_batch_size
             )
             qr_eval_metrics.append(qr_metrics)
             rc_eval_metrics.append(rc_metrics)
 
             # generation
-            qr_generated_ids = pad_shard_unpad(p_generate_step)(qr_state.params, batch, 'qr')
-            rc_generated_ids = pad_shard_unpad(p_generate_step)(rc_state.params, batch, 'rc')
+            qr_generated_ids = pad_shard_unpad(p_generate_step, static_argnums=(0, 2))(qr_state.params, batch, 'qr')
+            rc_generated_ids = pad_shard_unpad(p_generate_step, static_argnums=(0, 2))(rc_state.params, batch, 'rc')
 
             qr_eval_preds.extend(jax.device_get(qr_generated_ids.reshape(-1, gen_kwargs["max_length"])))
             rc_eval_preds.extend(jax.device_get(rc_generated_ids.reshape(-1, gen_kwargs["max_length"])))
