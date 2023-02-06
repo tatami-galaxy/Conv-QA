@@ -16,7 +16,7 @@ from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_ke
 from typing import Callable, Optional
 import math
 import nltk
-#nltk.download('punkt') # needed for rouge score
+nltk.download('punkt') # needed for rouge score
 import time
 from functools import partial
 import collections
