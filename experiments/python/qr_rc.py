@@ -45,7 +45,9 @@ while root.split('/')[-1] != 'conv-qa':
     root = dirname(root)
 
 # directories
-output_dir = root+'/models/qr/'
+output_dir = root+'/models/'
+qr_output_dir = root+'/models/qr/'
+rc_output_dir = root+'/models/rc/'
 data_dir = root+'/data/interim/qrecc/'
 # models
 # same for both qr and rc as of now
@@ -533,8 +535,6 @@ if __name__ == '__main__':
             qr_train_metrics.append(qr_train_metric)
             rc_train_metrics.append(rc_train_metric)
 
-            print('working')
-
         train_time += time.time() - train_start
 
         qr_train_metric = unreplicate(qr_train_metric)
@@ -622,8 +622,8 @@ if __name__ == '__main__':
             qr_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], qr_state.params))
             rc_params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], rc_state.params))
             print('saving')
-            qr_model.save_pretrained(output_dir, params=qr_params)
-            rc_model.save_pretrained(output_dir, params=rc_params)
+            qr_model.save_pretrained(qr_output_dir, params=qr_params)
+            rc_model.save_pretrained(rc_output_dir, params=rc_params)
             tokenizer.save_pretrained(output_dir)
 
 

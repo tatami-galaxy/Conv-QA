@@ -1,3 +1,4 @@
+tmux
 vim
 pytorch
 transformers
@@ -8,3 +9,4 @@ jax
 flax
 nltk
 rouge_score
+mkdir data/interim
