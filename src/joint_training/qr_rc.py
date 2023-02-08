@@ -368,6 +368,7 @@ if __name__ == '__main__':
     qr_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
     rc_model = FlaxT5ForConditionalGeneration.from_pretrained(model_name)
 
+
     # Dataset #
     print('loading dataset from disk')
     qrecc = load_from_disk(data_dir)
@@ -461,8 +462,8 @@ if __name__ == '__main__':
     train_batch_size = int(per_device_train_batch_size) 
     per_device_eval_batch_size = int(per_device_eval_batch_size)
     eval_batch_size = per_device_eval_batch_size * jax.device_count()
-    steps_per_epoch = len(dataset['train']) // train_batch_size
-    total_train_steps = steps_per_epoch * num_epochs
+    steps_per_epoch = len(dataset['train']) // train_batch_size#
+    total_train_steps = steps_per_epoch * num_epochs#
 
     # learning rate schedule
     print('learning rate schedule')
@@ -485,9 +486,9 @@ if __name__ == '__main__':
 
     # train states
     # FLaxT5PreTrainedModel __call__ 
-    print('train states')
+    # 2 states for 2 models
     qr_state = TrainState.create(
-        apply_fn=qr_model.__call__, params= qr_model.params,
+        apply_fn=qr_model.__call__, params= qr_model.params,  
         tx=adamw, dropout_rng=dropout_rng)
     rc_state = TrainState.create(
         apply_fn=rc_model.__call__, params=rc_model.params,
