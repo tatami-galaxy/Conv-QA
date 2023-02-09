@@ -245,8 +245,9 @@ def loss_fn(logits, labels, padding_mask, label_smoothing_factor=0.0):
 
 
 # define gradient update step fn
-def train_step(state, batch, model_str, label_smoothing_factor=0.0):
-    dropout_rng, new_dropout_rng = jax.random.split(state.dropout_rng)
+def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
+    dropout_rng, qr_dropout_rng = jax.random.split(qr_state.dropout_rng)
+    dropout_rng, rc_dropout_rng = jax.random.split(rc_state.dropout_rng)
 
     def compute_loss_qr(params):
         labels = batch.pop("qr_labels")
@@ -277,14 +278,19 @@ def train_step(state, batch, model_str, label_smoothing_factor=0.0):
         loss, num_labels = loss_fn(logits, labels, batch["rc_decoder_attention_mask"], label_smoothing_factor)
         return loss, num_labels  # therefore has_aux=True
 
-    # has_aux (bool)
-    # indicates whether fun (Function to be differentiated) returns a pair where the first element
-    # is considered the output of the mathematical function to be differentiated
-    # and the second element is auxiliary data. Default False
+    # compute rc loss and qr, rc grads
+    # compute rc loss and rc grads
+    # update
+
     if model_str == 'qr':
         grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
     elif model_str =='rc':
         grad_fn = jax.value_and_grad(compute_loss_rc, has_aux=True)
+
+    # has_aux (bool)
+    # indicates whether fun (Function to be differentiated) returns a pair where the first element
+    # is considered the output of the mathematical function to be differentiated
+    # and the second element is auxiliary data. Default False
 
     # if has_aux is True then a tuple of ((value, auxiliary_data), gradient) is returned
     (loss, num_labels), grad = grad_fn(state.params)
