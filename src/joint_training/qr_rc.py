@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import optax
 import transformers
 from flax import jax_utils, traverse_util
+import flax.linen as nn
 from flax.jax_utils import pad_shard_unpad, unreplicate
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard, shard_prng_key
@@ -22,6 +23,7 @@ import time
 from functools import partial
 import collections
 from typing import List
+import os
 from os.path import dirname, abspath
 
 
@@ -50,6 +52,7 @@ output_dir = root+'/models/'
 qr_output_dir = root+'/models/qr/'
 rc_output_dir = root+'/models/rc/'
 data_dir = root+'/data/interim/qrecc/'
+processed_data_dir = root+'/data/processed/qrecc/'
 # models
 # same for both qr and rc as of now
 model_name = 't5-base'
@@ -252,13 +255,13 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
     def compute_loss_qr(params):
         labels = batch.pop("qr_labels")
         # params for FLaxT5PreTrainedModel __call__
-        logits = state.apply_fn(
+        logits = qr_state.apply_fn(
             input_ids=batch["qr_input_ids"],
             attention_mask=batch["qr_attention_mask"],
             decoder_input_ids=batch["qr_decoder_input_ids"],
             decoder_attention_mask=batch["qr_decoder_attention_mask"],
             params=params,
-            dropout_rng=dropout_rng,
+            dropout_rng=qr_dropout_rng,
             train=True)[0]
         loss, num_labels = loss_fn(logits, labels, batch["qr_decoder_attention_mask"], label_smoothing_factor)
         return loss, num_labels  # therefore has_aux=True
@@ -267,13 +270,13 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
     def compute_loss_rc(params):
         labels = batch.pop("rc_labels")
         # params for FLaxT5PreTrainedModel __call__
-        logits = state.apply_fn(
+        logits = rc_state.apply_fn(
             input_ids=batch["rc_input_ids"],
             attention_mask=batch["rc_attention_mask"],
             decoder_input_ids=batch["rc_decoder_input_ids"],
             decoder_attention_mask=batch["rc_decoder_attention_mask"],
             params=params,
-            dropout_rng=dropout_rng,
+            dropout_rng=rc_dropout_rng,
             train=True)[0]
         loss, num_labels = loss_fn(logits, labels, batch["rc_decoder_attention_mask"], label_smoothing_factor)
         return loss, num_labels  # therefore has_aux=True
@@ -282,18 +285,38 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
     # compute rc loss and rc grads
     # update
 
-    if model_str == 'qr':
-        grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
-    elif model_str =='rc':
-        grad_fn = jax.value_and_grad(compute_loss_rc, has_aux=True)
+    ## value_and_grad ##
+    # argnums (Union[int, Sequence[int]])
+    # pptional, integer or sequence of integers.
+    # specifies which positional argument(s) to differentiate with respect to (default 0).
+
+    # value_and grad returns a ** Function ** with the same arguments as fun
+    # that evaluates both fun and the gradient of fun and returns them as a pair (a two-element tuple).
+    # if argnums is an integer then the gradient has the same shape and type
+    # as the positional argument indicated by that integer.
+    # if argnums is a sequence of integers, the gradient is a tuple of values
+    # with the same shapes and types as the corresponding arguments.
+    # if has_aux is True then a tuple of ((value, auxiliary_data), gradient) is returned.
+    rc_grad_fn = jax.value_and_grad(compute_loss_rc, has_aux=True)
+
+    #qr_grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
 
     # has_aux (bool)
     # indicates whether fun (Function to be differentiated) returns a pair where the first element
     # is considered the output of the mathematical function to be differentiated
     # and the second element is auxiliary data. Default False
 
-    # if has_aux is True then a tuple of ((value, auxiliary_data), gradient) is returned
-    (loss, num_labels), grad = grad_fn(state.params)
+    (loss, num_labels), grad = rc_grad_fn(rc_state.params)
+
+    # what grads are being computed?
+    # need grads wrt to the qr (string) input
+    # how to copy them back to the rc graph and propagate through graph?
+
+    # copy grads from rc to qr here
+
+
+    #(loss, num_labels), grad = qr_grad_fn(qr_state.params)
+
     num_labels = jax.lax.psum(num_labels, "batch")
 
     # true loss = total loss / total samples
@@ -303,9 +326,9 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
     # true grad = total grad / total samples
     grad = jax.lax.psum(grad, "batch")
     grad = jax.tree_util.tree_map(lambda x: x / num_labels, grad)
-    new_state = state.apply_gradients(grads=grad, dropout_rng=new_dropout_rng)
+    new_state = qr_state.apply_gradients(grads=grad, dropout_rng=qr_dropout_rng)
 
-    metrics = {"loss": loss, "learning_rate": linear_decay_lr_schedule_fn(state.step)}
+    metrics = {"loss": loss, "learning_rate": linear_decay_lr_schedule_fn(qr_state.step)}
     return new_state, metrics
 
 
@@ -376,75 +399,86 @@ if __name__ == '__main__':
 
 
     # Dataset #
-    print('loading dataset from disk')
-    qrecc = load_from_disk(data_dir)
-    #print(qrecc)
 
-    # removing examples with no context
-    ### maybe not?
-    print('removing examples with no context')
-    qrecc = qrecc.filter(lambda x: isinstance(x['context'], str) and isinstance(x['rewrite'], str))
+    # check if processed data exists
+    if os.path.isdir(processed_data_dir) and os.listdir(processed_data_dir):
+        print('processed data found at {}'.format(processed_data_dir))
+        dataset = load_from_disk(processed_data_dir)
 
-    # tokenize dataset function
-    def tokenize_dataset(batch):
-        # need fixed length inputs for jitted functions
-        qr_inputs = tokenizer(
-            batch['context'], batch['question'], padding='max_length',
-            truncation='only_first', max_length=max_length, return_tensors="np")
+    else:
 
-        rc_inputs = tokenizer(
-            batch['passage'], batch['rewrite'], padding='max_length',
-            truncation='only_first', max_length=max_length, return_tensors="np")
-        
-        qr_labels = tokenizer(
-            text_target=batch['rewrite'],
-            max_length=max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="np",)
+        print('loading raw dataset')
+        qrecc = load_from_disk(data_dir)
+        #print(qrecc)
 
-        rc_labels = tokenizer(
-            text_target=batch['answer'],
-            max_length=max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="np",)
+        # removing examples with no context
+        ### maybe not?
+        print('removing examples with no context')
+        qrecc = qrecc.filter(lambda x: isinstance(x['context'], str) and isinstance(x['rewrite'], str))
 
-        # prepare decoder input ids by shifting tokens right
-        # no 'labels' in flax model
-        qr_decoder_input_ids = shift_tokens_right(
-            qr_labels["input_ids"], qr_model.config.pad_token_id, qr_model.config.decoder_start_token_id)
-        rc_decoder_input_ids = shift_tokens_right(
-            rc_labels["input_ids"], rc_model.config.pad_token_id, rc_model.config.decoder_start_token_id)
+        # tokenize dataset function
+        def tokenize_dataset(batch):
+            # need fixed length inputs for jitted functions
+            qr_inputs = tokenizer(
+                batch['context'], batch['question'], padding='max_length',
+                truncation='only_first', max_length=max_length, return_tensors="np")
 
-        # combine dicts
-        model_inputs = {}
-        # input ids
-        model_inputs["qr_input_ids"] = qr_inputs["input_ids"]
-        model_inputs["rc_input_ids"] = rc_inputs["input_ids"]
-        # attention mask
-        model_inputs["qr_attention_mask"] = qr_inputs["attention_mask"]
-        model_inputs["rc_attention_mask"] = rc_inputs["attention_mask"]
-        # labels
-        model_inputs["qr_labels"] = qr_labels["input_ids"]
-        model_inputs["rc_labels"] = rc_labels["input_ids"]
-        # decoder input ids
-        model_inputs["qr_decoder_input_ids"] = np.asarray(qr_decoder_input_ids)
-        model_inputs["rc_decoder_input_ids"] = np.asarray(rc_decoder_input_ids)
-        # decoder attention mask
-        # we need decoder_attention_mask so we can ignore pad tokens from loss
-        model_inputs["qr_decoder_attention_mask"] = qr_labels["attention_mask"]
-        model_inputs["rc_decoder_attention_mask"] = rc_labels["attention_mask"]
+            rc_inputs = tokenizer(
+                batch['passage'], batch['rewrite'], padding='max_length',
+                truncation='only_first', max_length=max_length, return_tensors="np")
+            
+            qr_labels = tokenizer(
+                text_target=batch['rewrite'],
+                max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="np",)
 
-        return model_inputs
+            rc_labels = tokenizer(
+                text_target=batch['answer'],
+                max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="np",)
 
-    # tokenize dataset
-    # input_ids, attention_mask, labels, decoder_input_ids, decoder_attention_mask for qr and rc
-    dataset = qrecc.map(
-        tokenize_dataset,
-        batched=True,
-        remove_columns=qrecc['train'].column_names,
-        desc="tokenizing dataset",)
+            # prepare decoder input ids by shifting tokens right
+            # no 'labels' in flax model
+            qr_decoder_input_ids = shift_tokens_right(
+                qr_labels["input_ids"], qr_model.config.pad_token_id, qr_model.config.decoder_start_token_id)
+            rc_decoder_input_ids = shift_tokens_right(
+                rc_labels["input_ids"], rc_model.config.pad_token_id, rc_model.config.decoder_start_token_id)
+
+            # combine dicts
+            model_inputs = {}
+            # input ids
+            model_inputs["qr_input_ids"] = qr_inputs["input_ids"]
+            model_inputs["rc_input_ids"] = rc_inputs["input_ids"]
+            # attention mask
+            model_inputs["qr_attention_mask"] = qr_inputs["attention_mask"]
+            model_inputs["rc_attention_mask"] = rc_inputs["attention_mask"]
+            # labels
+            model_inputs["qr_labels"] = qr_labels["input_ids"]
+            model_inputs["rc_labels"] = rc_labels["input_ids"]
+            # decoder input ids
+            model_inputs["qr_decoder_input_ids"] = np.asarray(qr_decoder_input_ids)
+            model_inputs["rc_decoder_input_ids"] = np.asarray(rc_decoder_input_ids)
+            # decoder attention mask
+            # we need decoder_attention_mask so we can ignore pad tokens from loss
+            model_inputs["qr_decoder_attention_mask"] = qr_labels["attention_mask"]
+            model_inputs["rc_decoder_attention_mask"] = rc_labels["attention_mask"]
+
+            return model_inputs
+
+        # tokenize dataset
+        # input_ids, attention_mask, labels, decoder_input_ids, decoder_attention_mask for qr and rc
+        dataset = qrecc.map(
+            tokenize_dataset,
+            batched=True,
+            remove_columns=qrecc['train'].column_names,
+            desc="tokenizing dataset",)
+
+        dataset.save_to_disk(processed_data_dir)
+    
 
 
     # Training #
@@ -511,12 +545,13 @@ if __name__ == '__main__':
     p_train_step = jax.pmap(partial(
         train_step,
         label_smoothing_factor=label_smoothing_factor), "batch",
-        donate_argnums=(0,), static_broadcasted_argnums=2)  # donate_argnums ?
+        donate_argnums=(0,)
+    )  # donate_argnums ?
 
     p_eval_step = jax.pmap(partial(
         eval_step,
         label_smoothing_factor=label_smoothing_factor), "batch",
-        static_broadcasted_argnums=2)
+    )
 
     p_generate_step = jax.pmap(
             generate_step, "batch",
@@ -546,8 +581,8 @@ if __name__ == '__main__':
         for _ in tqdm(range(steps_per_epoch), desc="Training...", position=1, leave=False):
             batch = next(train_loader)
             batch = shard(batch) # for multi gpu
-            qr_state, qr_train_metric = p_train_step(qr_state, batch, 'qr')
-            rc_state, rc_train_metric = p_train_step(rc_state, batch, 'rc')
+
+            qr_state, qr_train_metric = p_train_step(qr_state, rc_state, batch)
 
             qr_train_metrics.append(qr_train_metric)
             rc_train_metrics.append(rc_train_metric)
