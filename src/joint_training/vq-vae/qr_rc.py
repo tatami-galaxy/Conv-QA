@@ -1,5 +1,18 @@
+import os
+from os.path import dirname, abspath
+import sys
+
+# get root directory
+root = abspath(__file__)
+while root.split('/')[-1] != 'conv-qa':
+    root = dirname(root)
+
+# append to path for loading class
+sys.path.append(root+'/src/joint_training/')
+
 from datasets import load_dataset, load_metric, load_from_disk
-from transformers import T5Tokenizer, FlaxT5ForConditionalGeneration
+from transformers import T5Tokenizer
+from modeling_flax_t5 import FlaxT5ForConditionalGeneration
 from transformers import set_seed
 import datasets
 import numpy as np
@@ -23,8 +36,6 @@ import time
 from functools import partial
 import collections
 from typing import List
-import os
-from os.path import dirname, abspath
 
 
 # hyperparameters
@@ -42,10 +53,6 @@ adam_epsilon = 1e-8
 weight_decay = 0.0
 label_smoothing_factor = 0.0
 
-# get root directory
-root = abspath(__file__)
-while root.split('/')[-1] != 'conv-qa':
-    root = dirname(root)
 
 # directories
 output_dir = root+'/models/'
