@@ -755,6 +755,11 @@ class FlaxT5Stack(nn.Module):
         init_cache: bool = False,
     ):
         hidden_states = self.embed_tokens(input_ids)
+
+        print(input_ids.shape)
+        print(hidden_states.shape)
+        quit()
+
         hidden_states = self.dropout(hidden_states, deterministic=deterministic)
 
         outputs = self.block(
@@ -909,7 +914,7 @@ class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
 
     config_class = T5Config
     base_model_prefix = "transformer"
-    module_class: nn.Module = None
+    module_class: nn.Module = None   # set to FlaxForContionalGenerationModule by FlaxForContionalGeneration
 
     def __init__(
         self,
@@ -961,6 +966,11 @@ class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
             return random_params
 
     @add_start_docstrings_to_model_forward(T5_INPUTS_DOCSTRING)
+
+    # this is the forward pass for FlaxT5ForConditionalGeneration
+    # calls __call__ of FlaxT5ForConditionalGenerationModule,
+    # when used from FlaxT5ForConditionalGeneration
+
     def __call__(
         self,
         input_ids: jnp.ndarray,
@@ -974,6 +984,7 @@ class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
         params: dict = None,
         dropout_rng: PRNGKey = None,
     ):
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -997,6 +1008,7 @@ class FlaxT5PreTrainedModel(FlaxPreTrainedModel):
         # Handle any PRNG if needed
         rngs = {"dropout": dropout_rng} if dropout_rng is not None else {}
 
+        # apply -> __call__ by default
         return self.module.apply(
             {"params": params or self.params},
             input_ids=jnp.array(input_ids, dtype="i4"),
@@ -1456,6 +1468,7 @@ class FlaxT5ForConditionalGenerationModule(nn.Module):
     def _get_decoder_module(self):
         return self.decoder
 
+    # kind of like init I guess?
     def setup(self):
         self.model_dim = self.config.d_model
 
@@ -1470,6 +1483,8 @@ class FlaxT5ForConditionalGenerationModule(nn.Module):
         encoder_config.causal = False
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
+        # encoder
+        # perturb embdding of encoder
         self.encoder = FlaxT5Stack(
             encoder_config, self.shared, dtype=self.dtype, gradient_checkpointing=self.gradient_checkpointing
         )
@@ -1488,6 +1503,8 @@ class FlaxT5ForConditionalGenerationModule(nn.Module):
             kernel_init=jax.nn.initializers.normal(self.config.initializer_factor),
             dtype=self.dtype,
         )
+
+    # default forward pass of FlaxT5ForConditionalGeneration model
 
     def __call__(
         self,
@@ -1643,6 +1660,8 @@ class FlaxT5ForConditionalGeneration(FlaxT5PreTrainedModel):
                 lm_logits = module.lm_head(sequence_output)
 
             return lm_logits, decoder_outputs
+
+        # calls __call__ of FlaxT5ForConditionalGenerationModule through FlaxT5PreTrainedModel
 
         outputs = self.module.apply(
             inputs,

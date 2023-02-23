@@ -274,7 +274,7 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
         return loss, num_labels  # therefore has_aux=True
 
     # also update qr here
-    def compute_loss_rc(params, rc_input):
+    def compute_loss_rc(params, rc_input):  ##### fix #####
         labels = batch.pop("rc_labels")
         # params for FLaxT5PreTrainedModel __call__
         logits = rc_state.apply_fn(
@@ -304,37 +304,21 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
     # if argnums is a sequence of integers, the gradient is a tuple of values
     # with the same shapes and types as the corresponding arguments.
     # if has_aux is True then a tuple of ((value, auxiliary_data), gradient) is returned.
-    rc_input = batch["rc_input_ids"]
-    rc_grad_fn = jax.value_and_grad(compute_loss_rc, has_aux=True, argnums=[0,1])
 
-    #qr_grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
+    # rc forward #
+
+    #rc_input = batch["rc_input_ids"]
+    #rc_grad_fn = jax.value_and_grad(compute_loss_rc, has_aux=True, argnums=[0,1])  ### fix ###
+
+    # qr forward #
+    qr_grad_fn = jax.value_and_grad(compute_loss_qr, has_aux=True)
 
     # has_aux (bool)
     # indicates whether fun (Function to be differentiated) returns a pair where the first element
     # is considered the output of the mathematical function to be differentiated
     # and the second element is auxiliary data. Default False
 
-    (loss, num_labels), grad = rc_grad_fn(rc_state.params, batch["rc_input_ids"])
-    print(grad)
-    quit()
-
-    f = open('gradfile.txt', 'w')
-    def myprint(d):
-        for k, v in d.items():
-            f.write(k+':')
-            if isinstance(v, dict):
-                myprint(v)
-            else:
-                if isinstance(v, str):
-                    f.write(v)
-                else:
-                    f.write('tracer')
-                f.write('\n')
-
-    #myprint(rc_state.params)
-    myprint(grad)
-    f.close()
-    quit()
+    #(loss, num_labels), grad = rc_grad_fn(rc_state.params, batch["rc_input_ids"])
 
     # what grads are being computed?
     # need grads wrt to the qr (string) input
@@ -343,7 +327,7 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
     # copy grads from rc to qr here
 
 
-    #(loss, num_labels), grad = qr_grad_fn(qr_state.params)
+    (loss, num_labels), grad = qr_grad_fn(qr_state.params)
 
     num_labels = jax.lax.psum(num_labels, "batch")
 
