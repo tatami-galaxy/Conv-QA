@@ -16,7 +16,7 @@
 
 
 import copy
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple, TypeVar
 
 import flax.linen as nn
 import jax
@@ -28,6 +28,8 @@ from flax.linen import partitioning as nn_partitioning
 from flax.linen.attention import dot_product_attention_weights
 from flax.traverse_util import flatten_dict, unflatten_dict
 from jax.random import PRNGKey
+
+T = TypeVar('T')
 
 from transformers.modeling_flax_outputs import (
     FlaxBaseModelOutput,
@@ -731,6 +733,29 @@ class FlaxT5Stack(nn.Module):
     dtype: jnp.dtype = jnp.float32  # the dtype of the computation
     gradient_checkpointing: bool = False
 
+
+    def is_mutable_collection(self, col: str) -> bool:
+        """Returns true if the collection `col` is mutable."""
+        if self.scope is None:
+            raise ValueError("Can't check mutability on unbound modules")
+        return self.scope.is_mutable_collection(col)
+
+    ### Use Module Class somehow or perturb in setup ###
+
+    def perturb(self, name: str, value: T, collection: str = 'perturbations') -> T:
+
+        def _root_has_collection():
+            """Returns True if the root scope has the collection."""
+            assert self.scope is not None
+            return collection in self.scope.root._variables
+        # we will only add the perturbation variable if the collection is mutable
+        # (e.g. during `init`) or if the collection was passed to `apply` (contained in
+        # the root scope).
+        if self.is_mutable_collection(collection) or _root_has_collection():
+            value += self.variable(collection, name, lambda: jnp.zeros_like(value)).value # type: ignore
+        return value
+
+
     def setup(self):
         self.causal = self.config.causal
 
@@ -741,6 +766,15 @@ class FlaxT5Stack(nn.Module):
             self.config.d_model, eps=self.config.layer_norm_epsilon, dtype=self.dtype
         )
         self.dropout = nn.Dropout(self.config.dropout_rate)
+
+        # perturbation
+        #self.hidden_0 = nn.module.perturb()
+
+        #print(self.embed_tokens)
+        #print(self.embed_tokens.embedding.shape)
+        #print(self.perturb)
+        #quit()
+
 
     def __call__(
         self,
@@ -754,10 +788,14 @@ class FlaxT5Stack(nn.Module):
         deterministic: bool = True,
         init_cache: bool = False,
     ):
+        # perturbation 
+        #self.embed_tokens.embedding = self.perturb('encoder_embedding', self.embed_tokens.embedding)
+        
         hidden_states = self.embed_tokens(input_ids)
 
-        print(input_ids.shape)
-        print(hidden_states.shape)
+        # perturbation
+        hidden_states = self.perturb('hidden_0', hidden_states)
+        print('works')
         quit()
 
         hidden_states = self.dropout(hidden_states, deterministic=deterministic)
@@ -1468,7 +1506,7 @@ class FlaxT5ForConditionalGenerationModule(nn.Module):
     def _get_decoder_module(self):
         return self.decoder
 
-    # kind of like init I guess?
+    # similar to a lazy __init__
     def setup(self):
         self.model_dim = self.config.d_model
 

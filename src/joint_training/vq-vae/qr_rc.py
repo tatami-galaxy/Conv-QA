@@ -329,6 +329,10 @@ def train_step(qr_state, rc_state, batch, label_smoothing_factor=0.0):
 
     (loss, num_labels), grad = qr_grad_fn(qr_state.params)
 
+    print(grad.keys())
+    #print(grad['encoder'])
+    quit()
+
     num_labels = jax.lax.psum(num_labels, "batch")
 
     # true loss = total loss / total samples
@@ -540,7 +544,7 @@ if __name__ == '__main__':
     # FLaxT5PreTrainedModel __call__ 
     # 2 states for 2 models
     qr_state = TrainState.create(
-        apply_fn=qr_model.__call__, params= qr_model.params,  
+        apply_fn=qr_model.__call__, params=qr_model.params,  
         tx=adamw, dropout_rng=dropout_rng)
     rc_state = TrainState.create(
         apply_fn=rc_model.__call__, params=rc_model.params,
@@ -594,7 +598,9 @@ if __name__ == '__main__':
             batch = next(train_loader)
             batch = shard(batch) # for multi gpu
 
+            ###
             qr_state, qr_train_metric = p_train_step(qr_state, rc_state, batch)
+            ###
 
             qr_train_metrics.append(qr_train_metric)
             rc_train_metrics.append(rc_train_metric)
